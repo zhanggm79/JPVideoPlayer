@@ -32,7 +32,7 @@
 
 @property (nonatomic) pthread_mutex_t lock;
 
-@property (nonatomic, strong, nonnull) dispatch_queue_t ioQueue;
+@property (nonatomic, strong) dispatch_queue_t ioQueue;
 
 @end
 
@@ -57,8 +57,8 @@
 }
 
 - (instancetype)initWithCustomURL:(NSURL *)customURL {
-    NSParameterAssert(customURL);
     if(!customURL){
+        JPErrorLog(@"customURL can not be nil");
         return nil;
     }
 
@@ -187,7 +187,9 @@ didCompleteWithError:(NSError *)error {
 
 - (void)startCurrentRequestWithLoadingRequest:(AVAssetResourceLoadingRequest *)loadingRequest
                                         range:(NSRange)dataRange {
-    JPDebugLog(@"ResourceLoader 处理新的请求, 数据范围是: %@", NSStringFromRange(dataRange));
+    /// 是否已经完全缓存完成.
+    BOOL isCompleted = self.cacheFile.isCompleted;
+    JPDebugLog(@"ResourceLoader 处理新的请求, 数据范围是: %@, 是否已经缓存完成: %@", NSStringFromRange(dataRange), isCompleted ? @"是" : @"否");
     if (dataRange.length == NSUIntegerMax) {
         [self addTaskWithLoadingRequest:loadingRequest
                                   range:NSMakeRange(dataRange.location, NSUIntegerMax)
@@ -230,6 +232,7 @@ didCompleteWithError:(NSError *)error {
             }
         }
     }
+
 
     // 发起请求.
     [self startNextTaskIfNeed];

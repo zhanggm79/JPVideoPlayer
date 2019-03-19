@@ -12,6 +12,7 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVAssetResourceLoader.h>
 #import <objc/runtime.h>
+#import "JPGCDExtensions.h"
 
 @class JPVideoPlayerModel;
 
@@ -19,8 +20,6 @@
 #define JPVideoPlayerCompat
 
 NS_ASSUME_NONNULL_BEGIN
-
-#define JPMainThreadAssert NSParameterAssert([[NSThread currentThread] isMainThread])
 
 typedef NS_ENUM(NSInteger, JPVideoPlayViewInterfaceOrientation) {
     JPVideoPlayViewInterfaceOrientationUnknown = 0,
@@ -31,10 +30,11 @@ typedef NS_ENUM(NSInteger, JPVideoPlayViewInterfaceOrientation) {
 typedef NS_ENUM(NSUInteger, JPVideoPlayerStatus)  {
     JPVideoPlayerStatusUnknown = 0,
     JPVideoPlayerStatusBuffering,
+    JPVideoPlayerStatusReadyToPlay,
     JPVideoPlayerStatusPlaying,
     JPVideoPlayerStatusPause,
     JPVideoPlayerStatusFailed,
-    JPVideoPlayerStatusStop
+    JPVideoPlayerStatusStop,
 };
 
 typedef NS_ENUM(NSUInteger, JPLogLevel) {
@@ -126,7 +126,8 @@ typedef NS_OPTIONS(NSUInteger, JPVideoPlayerDownloaderOptions) {
     JPVideoPlayerDownloaderAllowInvalidSSLCertificates = 1 << 3,
 };
 
-typedef void(^JPPlayVideoConfigurationCompletion)(UIView *_Nonnull view, JPVideoPlayerModel *_Nonnull playerModel);
+typedef void(^JPPlayVideoConfiguration)(UIView *_Nonnull view, JPVideoPlayerModel *_Nonnull playerModel);
+typedef void(^JPVideoPlayerConfiguration)(JPVideoPlayerModel *_Nonnull playerModel);
 
 UIKIT_EXTERN NSString * _Nonnull const JPVideoPlayerDownloadStartNotification;
 UIKIT_EXTERN NSString * _Nonnull const JPVideoPlayerDownloadReceiveResponseNotification;
@@ -137,11 +138,6 @@ FOUNDATION_EXTERN const NSRange JPInvalidRange;
 static JPLogLevel _logLevel;
 
 #define JPDEPRECATED_ATTRIBUTE(msg) __attribute__((deprecated(msg)));
-
-/**
- * Dispatch block excute on main queue.
- */
-void JPDispatchSyncOnMainQueue(dispatch_block_t block);
 
 /**
  * Call this method to check range valid or not.

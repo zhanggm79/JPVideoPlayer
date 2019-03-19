@@ -10,24 +10,84 @@
  */
 
 #import "JPVideoPlayerSupportUtils.h"
-#import "objc/runtime.h"
 #import "JPVideoPlayer.h"
 #import "UIView+WebVideoCache.h"
-#import "JPVideoPlayerControlViews.h"
-#import "JPVideoPlayerCompat.h"
 #import <MobileCoreServices/MobileCoreServices.h>
+#import "JPGCDExtensions.h"
+#import <CoreMotion/CoreMotion.h>
 
-@implementation NSURL (StripQuery)
+NS_ASSUME_NONNULL_BEGIN
 
-- (NSString *)absoluteStringByStrippingQuery{
-    NSString *absoluteString = [self absoluteString];
-    NSUInteger queryLength = [[self query] length];
-    NSString* strippedString = (queryLength ? [absoluteString substringToIndex:[absoluteString length] - (queryLength + 1)] : absoluteString);
+@interface NSMutableString (JPURLRequestFormatter)
 
-    if ([strippedString hasSuffix:@"?"]) {
-        strippedString = [strippedString substringToIndex:absoluteString.length-1];
+- (void)jp_appendCommandLineArgument:(NSString *)arg;
+
+@end
+
+@implementation NSMutableString (JPURLRequestFormatter)
+
+- (void)jp_appendCommandLineArgument:(NSString *)arg {
+    [self appendFormat:@" %@", [arg stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+}
+
+@end
+
+@interface JPURLRequestFormatter : NSObject
+
+@end
+
+@implementation JPURLRequestFormatter
+
++ (NSString *)cURLCommandFromURLRequest:(NSURLRequest *)request {
+    NSMutableString *command = [NSMutableString stringWithString:@"curl"];
+
+    [command jp_appendCommandLineArgument:[NSString stringWithFormat:@"-X %@", [request HTTPMethod]]];
+
+    if ([[request HTTPBody] length] > 0) {
+        NSMutableString *HTTPBodyString = [[NSMutableString alloc] initWithData:[request HTTPBody] encoding:NSUTF8StringEncoding];
+        [HTTPBodyString replaceOccurrencesOfString:@"\\" withString:@"\\\\" options:0 range:NSMakeRange(0, [HTTPBodyString length])];
+        [HTTPBodyString replaceOccurrencesOfString:@"`" withString:@"\\`" options:0 range:NSMakeRange(0, [HTTPBodyString length])];
+        [HTTPBodyString replaceOccurrencesOfString:@"\"" withString:@"\\\"" options:0 range:NSMakeRange(0, [HTTPBodyString length])];
+        [HTTPBodyString replaceOccurrencesOfString:@"$" withString:@"\\$" options:0 range:NSMakeRange(0, [HTTPBodyString length])];
+        [command jp_appendCommandLineArgument:[NSString stringWithFormat:@"-d \"%@\"", HTTPBodyString]];
     }
-    return strippedString;
+
+    NSString *acceptEncodingHeader = [[request allHTTPHeaderFields] valueForKey:@"Accept-Encoding"];
+    if ([acceptEncodingHeader rangeOfString:@"gzip"].location != NSNotFound) {
+        [command jp_appendCommandLineArgument:@"--compressed"];
+    }
+
+    if ([request URL]) {
+        NSArray *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:[request URL]];
+        if (cookies.count) {
+            NSMutableString *mutableCookieString = [NSMutableString string];
+            for (NSHTTPCookie *cookie in cookies) {
+                [mutableCookieString appendFormat:@"%@=%@;", cookie.name, cookie.value];
+            }
+
+            [command jp_appendCommandLineArgument:[NSString stringWithFormat:@"--cookie \"%@\"", mutableCookieString]];
+        }
+    }
+
+    for (id field in [request allHTTPHeaderFields]) {
+        [command jp_appendCommandLineArgument:[NSString stringWithFormat:@"-H %@", [NSString stringWithFormat:@"'%@: %@'", field, [[request valueForHTTPHeaderField:field] stringByReplacingOccurrencesOfString:@"\'" withString:@"\\\'"]]]];
+    }
+
+    [command jp_appendCommandLineArgument:[NSString stringWithFormat:@"\"%@\"", [[request URL] absoluteString]]];
+
+    return [NSString stringWithString:command];
+}
+
+@end
+
+@implementation NSURL (cURL)
+
+- (NSString *)jp_cURLCommand {
+    NSURLRequest *request = [NSURLRequest requestWithURL:self];
+    if(!request){
+        return nil;
+    }
+    return [JPURLRequestFormatter cURLCommandFromURLRequest:request];
 }
 
 @end
@@ -129,6 +189,12 @@
 NSString *kJPSwizzleErrorDomain = @"com.jpvideoplayer.swizzle.www";
 @implementation NSObject (JPSwizzle)
 
+#if OBJC_API_VERSION >= 2
+#define GetClass(obj)	object_getClass(obj)
+#else
+#define GetClass(obj)	(obj ? obj->isa : Nil)
+#endif
+
 + (BOOL)jp_swizzleMethod:(SEL)origSel withMethod:(SEL)altSel error:(NSError**)error {
     Method origMethod = class_getInstanceMethod(self, origSel);
     if (!origMethod) {
@@ -159,12 +225,20 @@ NSString *kJPSwizzleErrorDomain = @"com.jpvideoplayer.swizzle.www";
     return YES;
 }
 
++ (BOOL)jp_swizzleClassMethod:(SEL)origSel_ withClassMethod:(SEL)altSel_ error:(NSError**)error_ {
+    return [GetClass((id)self) jp_swizzleMethod:origSel_ withMethod:altSel_ error:error_];
+}
+
 @end
 
+NSString *JPLogMessage = nil;
+NSString *JPLogThreadName = nil;
+static dispatch_queue_t JPLogSyncQueue;
 @implementation JPLog
 
 + (void)initialize {
     _logLevel = JPLogLevelDebug;
+    JPLogSyncQueue = dispatch_queue_create("com.jpvideoplayer.log.sync.queue.www", DISPATCH_QUEUE_SERIAL);
 }
 
 + (void)logWithFlag:(JPLogLevel)logLevel
@@ -172,13 +246,7 @@ NSString *kJPSwizzleErrorDomain = @"com.jpvideoplayer.swizzle.www";
            function:(const char *)function
                line:(NSUInteger)line
              format:(NSString *)format, ... {
-    if (logLevel > _logLevel) {
-        return;
-    }
-    if (!format) {
-        return;
-    }
-
+    if (logLevel > _logLevel || !format) return;
 
     va_list args;
     va_start(args, format);
@@ -186,33 +254,38 @@ NSString *kJPSwizzleErrorDomain = @"com.jpvideoplayer.swizzle.www";
     NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
 
-    if (message.length) {
-        NSString *flag;
-        switch (logLevel) {
-            case JPLogLevelDebug:
-                flag = @"DEBUG";
-                break;
+    JPDispatchAsyncOnQueue(JPLogSyncQueue, ^{
 
-            case JPLogLevelWarning:
-                flag = @"Waring";
-                break;
+        JPLogMessage = message;
+        if (JPLogMessage.length) {
+            NSString *flag;
+            switch (logLevel) {
+                case JPLogLevelDebug:
+                    flag = @"DEBUG";
+                    break;
 
-            case JPLogLevelError:
-                flag = @"Error";
-                break;
+                case JPLogLevelWarning:
+                    flag = @"Waring";
+                    break;
 
-            default:
-                break;
+                case JPLogLevelError:
+                    flag = @"Error";
+                    break;
+
+                default:
+                    break;
+            }
+
+            JPLogThreadName = [[NSThread currentThread] description];
+            JPLogThreadName = [JPLogThreadName componentsSeparatedByString:@">"].lastObject;
+            JPLogThreadName = [JPLogThreadName componentsSeparatedByString:@","].firstObject;
+            JPLogThreadName = [JPLogThreadName stringByReplacingOccurrencesOfString:@"{number = " withString:@""];
+            // message = [NSString stringWithFormat:@"[%@] [Thread: %@] %@ => [%@ + %ld]", flag, threadName, message, tempString, line];
+            JPLogMessage = [NSString stringWithFormat:@"[%@] [Thread: %02ld] [%@]", flag, (long)[JPLogThreadName integerValue], JPLogMessage];
+            NSLog(@"%@", JPLogMessage);
         }
 
-        NSString *threadName = [[NSThread currentThread] description];
-        threadName = [threadName componentsSeparatedByString:@">"].lastObject;
-        threadName = [threadName componentsSeparatedByString:@","].firstObject;
-        threadName = [threadName stringByReplacingOccurrencesOfString:@"{number = " withString:@""];
-        // message = [NSString stringWithFormat:@"[%@] [Thread: %@] %@ => [%@ + %ld]", flag, threadName, message, tempString, line];
-        message = [NSString stringWithFormat:@"[%@] [Thread: %02ld] %@", flag, (long)[threadName integerValue], message];
-        printf("%s\n", message.UTF8String);
-    }
+    });
 }
 
 @end
@@ -332,114 +405,104 @@ NSString *kJPSwizzleErrorDomain = @"com.jpvideoplayer.swizzle.www";
 
 @end
 
-/**
- * The style of cell cannot stop in screen center.
- */
-typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
-    JPVideoPlayerUnreachableCellTypeNone = 0,
-    JPVideoPlayerUnreachableCellTypeTop = 1,
-    JPVideoPlayerUnreachableCellTypeDown = 2
-};
+@interface JPVideoPlayerScrollViewInternalObject()
 
-@interface UITableViewCell (UnreachableCellType)
+@property (nonatomic, weak) UIView<JPVideoPlayerCellProtocol> *playingVideoCell;
 
-@property(nonatomic) JPVideoPlayerUnreachableCellType unreachableCellType;
+@property(nonatomic, strong) CAShapeLayer *debugScrollViewVisibleFrameLayer;
 
 @end
 
-@implementation UITableViewCell (UnreachableCellType)
+@implementation JPVideoPlayerScrollViewInternalObject
 
-- (void)setUnreachableCellType:(JPVideoPlayerUnreachableCellType)unreachableCellType {
-    objc_setAssociatedObject(self, @selector(unreachableCellType), @(unreachableCellType), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++ (instancetype)new {
+    NSAssert(NO, @"Please use given initialize method.");
+    return nil;
 }
-
-- (JPVideoPlayerUnreachableCellType)unreachableCellType {
-    return [objc_getAssociatedObject(self, _cmd) unsignedIntValue];
-}
-
-@end
-
-@interface JPVideoPlayerTableViewHelper()
-
-@property (nonatomic, weak) UITableViewCell *playingVideoCell;
-
-@end
-
-@implementation JPVideoPlayerTableViewHelper
 
 - (instancetype)init {
     NSAssert(NO, @"Please use given initialize method.");
-    return [self initWithTableView:[UITableView new]];
+    return nil;
 };
 
-- (instancetype)initWithTableView:(UITableView *)tableView {
-    NSParameterAssert(tableView);
-    if(!tableView){
+- (instancetype)initWithScrollView:(UIScrollView<JPVideoPlayerScrollViewProtocol> *)scrollView {
+    if(!scrollView){
+        JPErrorLog(@"scrollView can not be nil.");
         return nil;
     }
 
     self = [super init];
     if(self){
-        _tableView = tableView;
-        _tableViewVisibleFrame = CGRectZero;
+        _scrollView = scrollView;
+        _scrollViewVisibleFrame = CGRectZero;
     }
     return self;
 }
 
 - (void)handleCellUnreachableTypeInVisibleCellsAfterReloadData {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UITableView *tableView = self.tableView;
+    if (!self.scrollView || ![self.scrollView isKindOfClass:[UITableView class]] && ![self.scrollView isKindOfClass:[UICollectionView class]]) return;
+
+    JPDispatchAfterTimeIntervalInSecond(0.3f, ^{
+
+        UITableView *tableView = (UITableView *)self.scrollView;
         for(UITableViewCell *cell in tableView.visibleCells){
             [self handleCellUnreachableTypeForCell:cell atIndexPath:[tableView indexPathForCell:cell]];
         }
+
     });
 }
 
-- (void)handleCellUnreachableTypeForCell:(UITableViewCell *)cell
+- (void)handleCellUnreachableTypeForCell:(UIView<JPVideoPlayerCellProtocol> *)cell
                              atIndexPath:(NSIndexPath *)indexPath {
-    UITableView *tableView = self.tableView;
+    if (!self.scrollView || ![self.scrollView isKindOfClass:[UITableView class]] && ![self.scrollView isKindOfClass:[UICollectionView class]]) return;
+
+    UITableView *tableView = (UITableView *)self.scrollView;
     NSArray<UITableViewCell *> *visibleCells = [tableView visibleCells];
-    if(!visibleCells.count){
-        return;
-    }
+    if(!visibleCells.count) return;
 
     NSUInteger unreachableCellCount = [self fetchUnreachableCellCountWithVisibleCellsCount:visibleCells.count];
-    NSInteger sectionsCount = 1;
-    if(tableView.dataSource && [tableView.dataSource respondsToSelector:@selector(numberOfSectionsInTableView:)]){
-        sectionsCount = [tableView.dataSource numberOfSectionsInTableView:tableView];
+    NSInteger sectionsCount = tableView.numberOfSections;
+    NSInteger rows = 0;
+    if ([self.scrollView isKindOfClass:[UITableView class]]) {
+        rows = [tableView numberOfRowsInSection:indexPath.section];
+    }
+    else if ([self.scrollView isKindOfClass:[UICollectionView class]]) {
+        UICollectionView *collectionView = (UICollectionView *)self.scrollView;
+        rows = [collectionView numberOfItemsInSection:indexPath.section];
     }
     BOOL isFirstSectionInSections = YES;
     BOOL isLastSectionInSections = YES;
     if(sectionsCount > 1){
         if(indexPath.section != 0){
-           isFirstSectionInSections = NO;
+            isFirstSectionInSections = NO;
         }
         if(indexPath.section != (sectionsCount - 1)){
-           isLastSectionInSections = NO;
+            isLastSectionInSections = NO;
         }
     }
-    NSUInteger rows = [tableView numberOfRowsInSection:indexPath.section];
     if (unreachableCellCount > 0) {
         if (indexPath.row <= (unreachableCellCount - 1)) {
             if(isFirstSectionInSections){
-                cell.unreachableCellType = JPVideoPlayerUnreachableCellTypeTop;
+                cell.jp_unreachableCellType = JPVideoPlayerUnreachableCellTypeTop;
             }
         }
         else if (indexPath.row >= (rows - unreachableCellCount)){
             if(isLastSectionInSections){
-                cell.unreachableCellType = JPVideoPlayerUnreachableCellTypeDown;
+                cell.jp_unreachableCellType = JPVideoPlayerUnreachableCellTypeDown;
             }
         }
         else{
-            cell.unreachableCellType = JPVideoPlayerUnreachableCellTypeNone;
+            cell.jp_unreachableCellType = JPVideoPlayerUnreachableCellTypeNone;
         }
     }
     else{
-        cell.unreachableCellType = JPVideoPlayerUnreachableCellTypeNone;
+        cell.jp_unreachableCellType = JPVideoPlayerUnreachableCellTypeNone;
     }
 }
 
 - (void)playVideoInVisibleCellsIfNeed {
+    if (!self.scrollView || ![self.scrollView isKindOfClass:[UITableView class]] && ![self.scrollView isKindOfClass:[UICollectionView class]]) return;
+
     if(self.playingVideoCell){
         [self playVideoWithCell:self.playingVideoCell];
         return;
@@ -448,14 +511,18 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
     // handle the first cell cannot play video when initialized.
     [self handleCellUnreachableTypeInVisibleCellsAfterReloadData];
 
-    UITableView *tableView = (UITableView *)self.tableView;
-    NSArray<UITableViewCell *> *visibleCells = [tableView visibleCells];
+    NSArray<UITableViewCell *> *visibleCells = [(UITableView *)self.scrollView visibleCells];
     // Find first cell need play video in visible cells.
-    UITableViewCell *targetCell = nil;
-    for (UITableViewCell *cell in visibleCells) {
-        if (cell.jp_videoURL.absoluteString.length > 0) {
-            targetCell = cell;
-            break;
+    UIView<JPVideoPlayerCellProtocol> *targetCell = nil;
+    if(self.playVideoInVisibleCellsBlock){
+        targetCell = self.playVideoInVisibleCellsBlock(visibleCells);
+    }
+    else {
+        for (UITableViewCell *cell in visibleCells) {
+            if (cell.jp_videoURL.absoluteString.length > 0) {
+                targetCell = cell;
+                break;
+            }
         }
     }
 
@@ -475,7 +542,7 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
 }
 
 - (void)scrollViewDidEndDraggingWillDecelerate:(BOOL)decelerate {
-    if (decelerate == NO) {
+    if (!decelerate) {
         [self handleScrollStopIfNeed];
     }
 }
@@ -488,22 +555,65 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
     return [self viewIsVisibleInTableViewVisibleFrame:view];
 }
 
+- (void)setDebugScrollViewVisibleFrame:(BOOL)debugScrollViewVisibleFrame {
+    _debugScrollViewVisibleFrame = debugScrollViewVisibleFrame;
+    [self displayScrollViewVisibleFrame:debugScrollViewVisibleFrame];
+}
+
+- (void)setScrollViewVisibleFrame:(CGRect)scrollViewVisibleFrame {
+    _scrollViewVisibleFrame = scrollViewVisibleFrame;
+    [self displayScrollViewVisibleFrame:self.debugScrollViewVisibleFrame];
+}
+
 
 #pragma mark - Private
 
+- (void)displayScrollViewVisibleFrame:(BOOL)display {
+    if (CGRectEqualToRect(self.scrollViewVisibleFrame, CGRectZero)) return;
+
+    if (self.debugScrollViewVisibleFrameLayer) {
+        [self.debugScrollViewVisibleFrameLayer removeFromSuperlayer];
+    }
+
+    if (!display) return;
+
+    self.debugScrollViewVisibleFrameLayer = ({
+        CAShapeLayer *layer = [CAShapeLayer new];
+        CGRect rect = self.scrollViewVisibleFrame;
+        layer.frame = rect;
+        rect.origin.y = 0.f;
+        rect.origin.x += 3.f;
+        rect.size.width -= 6.f;
+        UIBezierPath *bezierPath = [UIBezierPath bezierPathWithRect:rect];
+        [bezierPath moveToPoint:CGPointMake(rect.origin.x, CGRectGetMaxY(rect) * 0.5f)];
+        [bezierPath addLineToPoint:CGPointMake(CGRectGetMaxX(rect), CGRectGetMaxY(rect) * 0.5f)];
+        layer.path = bezierPath.CGPath;
+        layer.lineWidth = 1.f;
+        layer.strokeColor = [UIColor redColor].CGColor;
+        layer.fillColor = [UIColor clearColor].CGColor;
+        [self.scrollView.superview.layer addSublayer:layer];
+
+        layer;
+    });
+}
+
 - (BOOL)playingCellIsVisible {
-    if(CGRectIsEmpty(self.tableViewVisibleFrame)){
+    if(CGRectIsEmpty(self.scrollViewVisibleFrame)){
         return NO;
     }
     if(!self.playingVideoCell){
         return NO;
     }
 
-    return [self viewIsVisibleInTableViewVisibleFrame:self.playingVideoCell];
+    UIView *strategyView = self.scrollPlayStrategyType == JPScrollPlayStrategyTypeBestCell ? self.playingVideoCell : self.playingVideoCell.jp_videoPlayView;
+    if(!strategyView){
+        return NO;
+    }
+    return [self viewIsVisibleInTableViewVisibleFrame:strategyView];
 }
 
 - (BOOL)viewIsVisibleInTableViewVisibleFrame:(UIView *)view {
-    CGRect referenceRect = [self.tableView.superview convertRect:self.tableViewVisibleFrame toView:nil];
+    CGRect referenceRect = [self.scrollView.superview convertRect:self.scrollViewVisibleFrame toView:nil];
     CGPoint viewLeftTopPoint = view.frame.origin;
     viewLeftTopPoint.y += 1;
     CGPoint topCoordinatePoint = [view.superview convertPoint:viewLeftTopPoint toView:nil];
@@ -514,23 +624,23 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
     CGPoint viewLeftBottomPoint = CGPointMake(viewLeftTopPoint.x, viewBottomY);
     CGPoint bottomCoordinatePoint = [view.superview convertPoint:viewLeftBottomPoint toView:nil];
     BOOL isBottomContain = CGRectContainsPoint(referenceRect, bottomCoordinatePoint);
-    if(!isTopContain && !isBottomContain){
-        return NO;
-    }
-    return YES;
+    return !(!isTopContain && !isBottomContain);
 }
 
-- (UITableViewCell *)findTheBestPlayVideoCell {
-    if(CGRectIsEmpty(self.tableViewVisibleFrame)){
-        return nil;
-    }
+- (UIView<JPVideoPlayerCellProtocol> *)findBestCellForPlayingVideo {
+    if (!self.scrollView || ![self.scrollView isKindOfClass:[UITableView class]] && ![self.scrollView isKindOfClass:[UICollectionView class]]) return nil;
+    if(CGRectIsEmpty(self.scrollViewVisibleFrame)) return nil;
 
     // To find next cell need play video.
     UITableViewCell *targetCell = nil;
-    UITableView *tableView = self.tableView;
+    UITableView *tableView = (UITableView *)self.scrollView;
     NSArray<UITableViewCell *> *visibleCells = [tableView visibleCells];
+    if(self.findBestCellInVisibleCellsBlock){
+        return self.findBestCellInVisibleCellsBlock(visibleCells);
+    }
+
     CGFloat gap = MAXFLOAT;
-    CGRect referenceRect = [tableView.superview convertRect:self.tableViewVisibleFrame toView:nil];
+    CGRect referenceRect = [tableView.superview convertRect:self.scrollViewVisibleFrame toView:nil];
 
     for (UITableViewCell *cell in visibleCells) {
         if (!(cell.jp_videoURL.absoluteString.length > 0)) {
@@ -543,9 +653,9 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
         if(!strategyView){
             continue;
         }
-        if (cell.unreachableCellType != JPVideoPlayerUnreachableCellTypeNone) {
+        if (cell.jp_unreachableCellType != JPVideoPlayerUnreachableCellTypeNone) {
             // Must the all area of the cell is visible.
-            if (cell.unreachableCellType == JPVideoPlayerUnreachableCellTypeTop) {
+            if (cell.jp_unreachableCellType == JPVideoPlayerUnreachableCellTypeTop) {
                 CGPoint strategyViewLeftUpPoint = strategyView.frame.origin;
                 strategyViewLeftUpPoint.y += 2;
                 CGPoint coordinatePoint = [strategyView.superview convertPoint:strategyViewLeftUpPoint toView:nil];
@@ -554,9 +664,9 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
                     break;
                 }
             }
-            else if (cell.unreachableCellType == JPVideoPlayerUnreachableCellTypeDown){
-                CGPoint strategyViewLeftUpPoint = cell.frame.origin;
-                CGFloat strategyViewDownY = strategyViewLeftUpPoint.y + cell.bounds.size.height;
+            else if (cell.jp_unreachableCellType == JPVideoPlayerUnreachableCellTypeDown){
+                CGPoint strategyViewLeftUpPoint = strategyView.frame.origin;
+                CGFloat strategyViewDownY = strategyViewLeftUpPoint.y + strategyView.bounds.size.height;
                 CGPoint strategyViewLeftDownPoint = CGPointMake(strategyViewLeftUpPoint.x, strategyViewDownY);
                 strategyViewLeftDownPoint.y -= 1;
                 CGPoint coordinatePoint = [strategyView.superview convertPoint:strategyViewLeftDownPoint toView:nil];
@@ -580,10 +690,7 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
 }
 
 - (NSUInteger)fetchUnreachableCellCountWithVisibleCellsCount:(NSUInteger)visibleCellsCount {
-    if(![self.unreachableCellDictionary.allKeys containsObject:[NSString stringWithFormat:@"%d", (int)visibleCellsCount]]){
-        return 0;
-    }
-    return [[self.unreachableCellDictionary valueForKey:[NSString stringWithFormat:@"%d", (int)visibleCellsCount]] intValue];
+    return [self.unreachableCellDictionary[[NSString stringWithFormat:@"%d", (int)visibleCellsCount]] intValue];
 }
 
 - (NSDictionary<NSString *, NSString *> *)unreachableCellDictionary {
@@ -591,23 +698,22 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
         // The key is the number of visible cells in screen,
         // the value is the number of cells cannot stop in screen center.
         _unreachableCellDictionary = @{
-                @"4" : @"1",
-                @"3" : @"1",
-                @"2" : @"0"
+                @"4" : @1,
+                @"3" : @1,
+                @"2" : @0
         };
     }
     return _unreachableCellDictionary;
 }
 
-- (void)playVideoWithCell:(UITableViewCell *)cell {
-    NSParameterAssert(cell);
+- (void)playVideoWithCell:(UIView<JPVideoPlayerCellProtocol> *)cell {
     if(!cell){
         return;
     }
 
     self.playingVideoCell = cell;
-    if (self.delegate && [self.delegate respondsToSelector:@selector(tableView:willPlayVideoOnCell:)]) {
-        [self.delegate tableView:self.tableView willPlayVideoOnCell:cell];
+    if (self.delegate && [self.delegate respondsToSelector:@selector(scrollView:willPlayVideoOnCell:)]) {
+        [self.delegate scrollView:self.scrollView willPlayVideoOnCell:cell];
     }
 }
 
@@ -623,13 +729,13 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
 }
 
 - (void)handleScrollStopIfNeed {
-    UITableViewCell *bestCell = [self findTheBestPlayVideoCell];
+    UITableViewCell *bestCell = [self findBestCellForPlayingVideo];
     if(!bestCell){
         return;
     }
 
     // If the found cell is the cell playing video, this situation cannot play video again.
-    if(bestCell == self.playingVideoCell){
+    if([bestCell jp_isEqualToCell:self.playingVideoCell]){
         return;
     }
 
@@ -638,3 +744,130 @@ typedef NS_OPTIONS(NSUInteger , JPVideoPlayerUnreachableCellType) {
 }
 
 @end
+
+static NSString * const JPMigrationLastSDKVersionKey = @"com.jpvideoplayer.last.migration.version.www";
+@implementation JPMigration
+
++ (void)migrateToSDKVersion:(NSString *)version
+                      block:(dispatch_block_t)migrationBlock {
+    // version > lastMigrationVersion
+    if ([version compare:[self lastMigrationVersion] options:NSNumericSearch] == NSOrderedDescending) {
+        migrationBlock();
+        JPDebugLog(@"JPMigration: Running migration for version %@", version);
+        [self setLastMigrationVersion:version];
+    }
+}
+
++ (NSString *)lastMigrationVersion {
+    NSString *res = [[NSUserDefaults standardUserDefaults] valueForKey:JPMigrationLastSDKVersionKey];
+    return (res ? res : @"");
+}
+
++ (void)setLastMigrationVersion:(NSString *)version {
+    [[NSUserDefaults standardUserDefaults] setValue:version forKey:JPMigrationLastSDKVersionKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+@end
+
+@interface JPDeviceInterfaceOrientationMonitor ()
+
+@property(nonatomic, strong) NSHashTable<id<JPDeviceInterfaceOrientationMonitorObserver>> *observers;
+
+@end
+
+@implementation JPDeviceInterfaceOrientationMonitor
+
++ (void)load {
+    JPDispatchAfterTimeIntervalInSecond(0.1, ^{
+        [self shared];
+    });
+}
+
+- (instancetype)init {
+    @throw [NSException exceptionWithName:@"JPDeviceInterfaceOrientationMonitor init error" reason:@"Use 'shared' to get instance." userInfo:nil];
+    return [super init];
+}
+
++ (instancetype)shared {
+    static dispatch_once_t once;
+    static JPDeviceInterfaceOrientationMonitor *_instance;
+    dispatch_once(&once, ^{
+        _instance = [[self alloc] _init];
+    });
+    return _instance;
+}
+
+- (instancetype)_init {
+    self = [super init];
+    if (self) {
+        _observers = [[NSHashTable alloc] initWithOptions:NSPointerFunctionsWeakMemory|NSPointerFunctionsObjectPointerPersonality capacity:0];
+        [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(deviceInterfaceOrientationDidChange)
+                                                     name:UIDeviceOrientationDidChangeNotification
+                                                   object:nil];
+    }
+    return self;
+}
+
+- (void)addObserver:(id <JPDeviceInterfaceOrientationMonitorObserver>)observer {
+    if (!observer) return;
+    [self.observers addObject:observer];
+}
+
+- (void)removeObserver:(id <JPDeviceInterfaceOrientationMonitorObserver>)observer {
+    if (!observer) return;
+    [self.observers removeObject:observer];
+}
+
+- (void)deviceInterfaceOrientationDidChange {
+    UIDevice *device = [UIDevice currentDevice];
+    switch (device.orientation) {
+        case UIDeviceOrientationFaceUp:
+            JPDebugLog(@"屏幕朝上平躺");
+            break;
+
+        case UIDeviceOrientationFaceDown:
+            JPDebugLog(@"屏幕朝下平躺");
+            break;
+
+            //系統無法判斷目前Device的方向，有可能是斜置
+        case UIDeviceOrientationUnknown:
+            JPDebugLog(@"未知方向");
+            break;
+
+        case UIDeviceOrientationLandscapeLeft:
+            JPDebugLog(@"屏幕向左横置");
+            break;
+
+        case UIDeviceOrientationLandscapeRight:
+            JPDebugLog(@"屏幕向右橫置");
+            break;
+
+        case UIDeviceOrientationPortrait:
+            JPDebugLog(@"屏幕直立");
+            break;
+
+        case UIDeviceOrientationPortraitUpsideDown:
+            JPDebugLog(@"屏幕直立，上下顛倒");
+            break;
+
+        default:
+            JPDebugLog(@"无法辨识");
+            break;
+    }
+    if (!self.observers.count) return;
+
+    [[self.observers allObjects] enumerateObjectsUsingBlock:^(id <JPDeviceInterfaceOrientationMonitorObserver> obj, NSUInteger idx, BOOL *stop) {
+
+        if ([obj respondsToSelector:@selector(interfaceOrientationMonitor:interfaceOrientationDidChange:)]) {
+            [obj interfaceOrientationMonitor:self interfaceOrientationDidChange:device.orientation];
+        }
+
+    }];
+}
+
+@end
+
+NS_ASSUME_NONNULL_END

@@ -49,10 +49,6 @@ static const NSString *const kJPVideoPlayerContentRangeKey = @"Content-Range";
                              cacheFile:(JPVideoPlayerCacheFile *)cacheFile
                              customURL:(NSURL *)customURL
                                 cached:(BOOL)cached {
-    NSParameterAssert(loadingRequest);
-    NSParameterAssert(JPValidByteRange(requestRange));
-    NSParameterAssert(cacheFile);
-    NSParameterAssert(customURL);
     if(!loadingRequest || !JPValidByteRange(requestRange) || !cacheFile || !customURL){
         return nil;
     }
@@ -76,15 +72,15 @@ static const NSString *const kJPVideoPlayerContentRangeKey = @"Content-Range";
 }
 
 + (instancetype)requestTaskWithLoadingRequest:(AVAssetResourceLoadingRequest *)loadingRequest
-                                 requestRange:(NSRange)requestRange
-                                    cacheFile:(JPVideoPlayerCacheFile *)cacheFile
-                                    customURL:(NSURL *)customURL
-                                       cached:(BOOL)cached {
-    return [[[self class] alloc] initWithLoadingRequest:loadingRequest
-                                           requestRange:requestRange
-                                              cacheFile:cacheFile
-                                              customURL:customURL
-                                                 cached:cached];
+        requestRange:(NSRange)requestRange
+        cacheFile:(JPVideoPlayerCacheFile *)cacheFile
+        customURL:(NSURL *)customURL
+        cached:(BOOL)cached {
+    return [[self.class alloc] initWithLoadingRequest:loadingRequest
+                                         requestRange:requestRange
+                                            cacheFile:cacheFile
+                                            customURL:customURL
+                                               cached:cached];
 }
 
 - (void)requestDidReceiveResponse:(NSURLResponse *)response {
@@ -299,7 +295,6 @@ static const NSString *const kJPVideoPlayerContentRangeKey = @"Content-Range";
                              cacheFile:(JPVideoPlayerCacheFile *)cacheFile
                              customURL:(NSURL *)customURL
                                 cached:(BOOL)cached {
-    NSParameterAssert(JPValidByteRange(requestRange));
     self = [super initWithLoadingRequest:loadingRequest
                             requestRange:requestRange
                                cacheFile:cacheFile
@@ -354,8 +349,6 @@ static const NSString *const kJPVideoPlayerContentRangeKey = @"Content-Range";
 
 - (void)internalStart {
     // task request data from web.
-    NSParameterAssert(self.unownedSession);
-    NSParameterAssert(self.request);
     if(!self.unownedSession || !self.request){
         [self requestDidCompleteWithError:JPErrorWithDescription(@"unownedSession or request can not be nil")];
         return;

@@ -57,24 +57,48 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
  * @warning This method may be call repeatedly when download a video.
  *
  * @param videoLength The video file length.
+ * @param videoURL    The URL of video.
  */
-- (void)didFetchVideoFileLength:(NSUInteger)videoLength;
+- (void)didFetchVideoFileLength:(NSUInteger)videoLength
+                    videoURL:(NSURL *)videoURL;
 
 /**
  * This method will be called when received new video data from web.
  *
  * @param cacheRanges The ranges of video data cached in disk.
+ * @param videoURL    The URL of video.
  */
-- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges;
+- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges
+                   videoURL:(NSURL *)videoURL;
 
 /**
  * This method will be called when play progress changed.
  *
  * @param elapsedSeconds The elapsed player time.
  * @param totalSeconds   The length of the video.
+ * @param videoURL       The URL of video.
  */
 - (void)playProgressDidChangeElapsedSeconds:(NSTimeInterval)elapsedSeconds
-                               totalSeconds:(NSTimeInterval)totalSeconds;
+                               totalSeconds:(NSTimeInterval)totalSeconds
+                                   videoURL:(NSURL *)videoURL;
+
+/**
+ * This method will be called when video player status did change.
+ *
+ * @param playerStatus The player status.
+ * @param videoURL     The URL of video.
+ */
+- (void)videoPlayerStatusDidChange:(JPVideoPlayerStatus)playerStatus
+                          videoURL:(NSURL *)videoURL;
+
+/**
+ * This method will be called when the interfaceOrientation of player was changed.
+ *
+ * @param interfaceOrientation The interfaceOrientation of player.
+ * @param videoURL             The URL of video.
+ */
+- (void)videoPlayerInterfaceOrientationDidChange:(JPVideoPlayViewInterfaceOrientation)interfaceOrientation
+                                        videoURL:(NSURL *)videoURL;
 
 @end
 
@@ -109,13 +133,17 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 @optional
 /**
  * This method will be called when player buffering.
+ *
+ * @param videoURL    The URL of video.
  */
-- (void)didStartBuffering;
+- (void)didStartBufferingVideoURL:(NSURL *)videoURL;
 
 /**
  * This method will be called when player finish buffering and start play.
+ *
+ * @param videoURL    The URL of video.
  */
-- (void)didFinishBuffering;
+- (void)didFinishBufferingVideoURL:(NSURL *)videoURL;
 
 @end
 
@@ -138,11 +166,23 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 @property(nonatomic) float volume;
 
 /**
-* Moves the playback cursor.
-*
-* @param time The time where seek to.
+ * Moves the playback cursor.
+ *
+ * @param time The time where seek to.
+ *
+ * @return The result of Moving the playback cursor, YES means succeed, NO means failure.
 */
-- (void)seekToTime:(CMTime)time;
+- (BOOL)seekToTime:(CMTime)time;
+
+/**
+ * Fetch the elapsed seconds of player.
+ */
+- (NSTimeInterval)elapsedSeconds;
+
+/**
+ * Fetch the total seconds of player.
+ */
+- (NSTimeInterval)totalSeconds;
 
 /**
  *  Call this method to pause playback.

@@ -30,11 +30,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *indexFilePath;
 
 /**
- * The inner queue to prevent resource competition.
- */
-@property (nonatomic, strong, readonly) dispatch_queue_t ioQueue;
-
-/**
  * The video data expected length.
  * Note this value is not always equal to the cache video data length.
  */
@@ -58,7 +53,7 @@ NS_ASSUME_NONNULL_BEGIN
 /**
  * A flag represent the video data is cache finished or not.
  */
-@property (nonatomic, readonly) BOOL isCompeleted;
+@property (nonatomic, readonly) BOOL isCompleted;
 
 /**
  * A flag represent read offset is point to the end of video data file.

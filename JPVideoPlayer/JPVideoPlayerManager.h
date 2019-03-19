@@ -150,6 +150,35 @@ shouldTranslateIntoPlayVideoFromResumePlayForURL:(NSURL *)videoURL;
 - (BOOL)videoPlayerManager:(JPVideoPlayerManager *)videoPlayerManager
 shouldPausePlaybackWhenReceiveAudioSessionInterruptionNotificationForURL:(NSURL *)videoURL;
 
+/**
+ * Provide custom audio session category to play video.
+ *
+ * @param videoPlayerManager The current `JPVideoPlayerManager`.
+ *
+ * @return The prefer audio session category.
+ */
+- (AVAudioSessionCategory)videoPlayerManagerPreferAudioSessionCategory:(JPVideoPlayerManager *)videoPlayerManager;
+
+/**
+ * Called when play a already played video.
+ *
+ * @param videoPlayerManager The current `JPVideoPlayerManager`.
+ * @param videoURL           The url of the video to be play.
+ * @param elapsedSeconds     The elapsed seconds last playback recorded.
+ */
+- (BOOL)videoPlayerManager:(JPVideoPlayerManager *)videoPlayerManager
+shouldResumePlaybackFromPlaybackRecordForURL:(NSURL *)videoURL
+            elapsedSeconds:(NSTimeInterval)elapsedSeconds;
+
+/**
+ * Invoked when interface orientation did change.
+ *
+ * @param videoPlayerManager    The current `JPVideoPlayerManager`.
+ * @param interfaceOrientation  The current `UIDeviceOrientation`.
+ */
+- (void)videoPlayerManager:(JPVideoPlayerManager *)videoPlayerManager
+        interfaceOrientationDidChange:(UIDeviceOrientation)interfaceOrientation;
+
 @end
 
 @interface JPVideoPlayerManagerModel : NSObject
@@ -213,13 +242,13 @@ shouldPausePlaybackWhenReceiveAudioSessionInterruptionNotificationForURL:(NSURL 
  * @param url                     The URL of video.
  * @param showLayer               The layer of video layer display on.
  * @param options                 A flag to specify options to use for this request.
- * @param configurationCompletion The block will be call when video player config finished. because initialize player is not synchronize,
+ * @param configuration           The block will be call when video player config finished. because initialize player is not synchronize,
  *                                 so other category method is disabled before config finished.
  */
 - (void)playVideoWithURL:(NSURL *)url
              showOnLayer:(CALayer *)showLayer
                  options:(JPVideoPlayerOptions)options
- configurationCompletion:(JPPlayVideoConfigurationCompletion)configurationCompletion;
+           configuration:(JPVideoPlayerConfiguration)configuration;
 
 /**
  * Resume video play for the given URL.
@@ -227,18 +256,25 @@ shouldPausePlaybackWhenReceiveAudioSessionInterruptionNotificationForURL:(NSURL 
  * @param url                     The URL of video.
  * @param showLayer               The layer of video layer display on.
  * @param options                 A flag to specify options to use for this request.
- * @param configurationCompletion The block will be call when video player config finished. because initialize player is not synchronize,
+ * @param configuration           The block will be call when video player config finished. because initialize player is not synchronize,
  *                                 so other category method is disabled before config finished.
  */
 - (void)resumePlayWithURL:(NSURL *)url
               showOnLayer:(CALayer *)showLayer
                   options:(JPVideoPlayerOptions)options
-  configurationCompletion:(JPPlayVideoConfigurationCompletion)configurationCompletion;
+            configuration:(JPVideoPlayerConfiguration)configuration;
 
 /**
  * Return the cache key for a given URL.
  */
 - (NSString *_Nullable)cacheKeyForURL:(NSURL *)url;
+
+#pragma mark - Version
+
+/**
+ * Return the version of SDK;
+ */
+- (NSString *)SDKVersion;
 
 @end
 

@@ -3,8 +3,8 @@
 </p>
 
 [![license](https://img.shields.io/github/license/mashape/apistatus.svg)](https://github.com/newyjp/JPVideoPlayer)
-[![pod](https://img.shields.io/badge/pod-3.0.2-green.svg)](https://github.com/newyjp/JPVideoPlayer) 
-[![pod](https://img.shields.io/badge/about%20me-NewPan-red.svg)](http://www.jianshu.com/users/e2f2d779c022/latest_articles) 
+[![pod](https://img.shields.io/cocoapods/v/JPVideoPlayer.svg?style=flat)](https://github.com/newyjp/JPVideoPlayer)
+[![pod](https://img.shields.io/badge/about%20me-NewPan-red.svg)](http://www.jianshu.com/users/e2f2d779c022/latest_articles)
 [![pod](https://img.shields.io/badge/swift-support-fc2f24.svg?maxAge=2592000)](https://github.com/apple/swift)
 
 This library provides an video player with cache support in `UITableView` base on `AVPlayer`.
@@ -30,6 +30,8 @@ This library provides an video player with cache support in `UITableView` base o
 - Xcode 7.3 or later
 
 ## Getting Started
+- Read [[iOS]JPVideoPlayer 3.0 使用介绍](https://www.jianshu.com/p/282e3e0cfe78)
+- Read [[iOS]JPVideoPlayer 3.0 源码解析](https://www.jianshu.com/p/5de1965824d4)
 - Read [[iOS]仿微博视频边下边播之封装播放器](http://www.jianshu.com/p/0d4588a7540f)
 - Read [[iOS]仿微博视频边下边播之滑动TableView自动播放](http://www.jianshu.com/p/3946317760a6)
 - Read [[iOS]从使用 KVO 监听 readonly 属性说起](http://www.jianshu.com/p/abd238407e0d)
@@ -45,7 +47,7 @@ NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4
 [aview jp_playVideoMuteWithURL:url
             bufferingIndicator:nil
                   progressView:nil
-       configurationCompletion:nil];
+           	 configuration:nil];
 ```
 
 
@@ -56,7 +58,7 @@ NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4
 [aview jp_resumeMutePlayWithURL:url
              bufferingIndicator:nil
                    progressView:nil
-        configurationCompletion:nil];
+        	  configuration:nil];
 ```
 
 #### 1.3.Play video and display controlView & progressView.
@@ -67,7 +69,7 @@ NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4
         bufferingIndicator:nil
                controlView:nil
               progressView:nil
-   configurationCompletion:nil];
+   	     configuration:nil];
 ```
 
 #### 1.4.Resume play with displaying controlView & progressView.
@@ -78,7 +80,7 @@ NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4
          bufferingIndicator:nil
                 controlView:nil
                progressView:nil
-    configurationCompletion:nil];
+    	      configuration:nil];
 ```
 
 #### 1.5.Play video without controlView & progressView.
@@ -87,7 +89,7 @@ NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4
 NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4"];
 [aview jp_playVideoWithURL:url
 		   options:kNilOptions
-   configurationCompletion:nil];
+   	     configuration:nil];
 ```
 
 #### 1.6. Resume play without controlView & progressView.
@@ -96,7 +98,7 @@ NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4
 NSURL *url = [NSURL URLWithString:@"http://p11s9kqxf.bkt.clouddn.com/bianche.mp4"];
 [aview jp_resumePlayWithURL:url
 		    options:kNilOptions
-    configurationCompletion:nil];
+    	      configuration:nil];
 ```
 
 
@@ -167,7 +169,7 @@ There are two ways to use `JPVideoPlayer` in your project:
 ```
 platform :ios, '8.0'
 target "YourProjectName" do
-pod 'JPVideoPlayer', '~> 3.0.2'
+pod 'JPVideoPlayer'
 end
 ```
 
@@ -183,4 +185,17 @@ All source code is licensed under the [MIT License](https://github.com/Chris-Pan
 ## Architecture
 <p align="left" >
 <img src="Images/JPVideoPlayerSequenceDiagram.png" title="JPVideoPlayerSequenceDiagram" float=left>
+</p>
+
+## 赞助
+你这一赞助，我写的就更来劲了！
+
+#### 微信赞助扫码
+<p align="left" >
+<img src="Images/wechat.png" title="Wechat" height="250" width="250" float=left>
+</p>
+
+#### 支付宝赞助扫码
+<p align="left" >
+<img src="Images/zhifubao.png" title="Zhifubao" height="250" width="250" float=left>
 </p>

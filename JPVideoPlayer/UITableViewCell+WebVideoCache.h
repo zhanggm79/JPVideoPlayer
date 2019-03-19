@@ -9,22 +9,11 @@
  * or http://www.jianshu.com/users/e2f2d779c022/latest_articles to contact me.
  */
 
-#import <UIKit/UIKit.h>
+#import "JPVideoPlayerCellProtocol.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface UITableViewCell (WebVideoCache)
-
-/**
- * The video path url.
- * @note The url may a web url or local file url.
- */
-@property (nonatomic, nullable) NSURL *jp_videoURL;
-
-/**
- * The view to display video layer.
- */
-@property (nonatomic, nullable) UIView *jp_videoPlayView;
+@interface UITableViewCell (WebVideoCache) <JPVideoPlayerCellProtocol>
 
 @end
 

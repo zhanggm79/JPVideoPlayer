@@ -15,7 +15,7 @@
 
 @interface JPVideoPlayerControlProgressView()
 
-@property (nonatomic, strong) NSArray<NSValue *> *rangesValue;
+@property (nonatomic, strong) NSArray<NSValue *> *rangeValues;
 
 @property(nonatomic, assign) NSUInteger fileLength;
 
@@ -63,7 +63,8 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
     self.dragSlider.frame = constrainedRect;
     [self updateCacheProgressViewIfNeed];
     [self playProgressDidChangeElapsedSeconds:self.elapsedSeconds
-                                 totalSeconds:self.totalSeconds];
+                                 totalSeconds:self.totalSeconds
+                                     videoURL:[NSURL new]];
 }
 
 
@@ -73,29 +74,35 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
     self.playerView = view;
 }
 
-- (void)viewWillPrepareToReuse {
-    [self cacheRangeDidChange:@[]];
-    [self playProgressDidChangeElapsedSeconds:0 totalSeconds:1];
+- (void)videoPlayerManager:(JPVideoPlayerManager *)videoPlayerManager
+    playerStatusDidChanged:(JPVideoPlayerStatus)playerStatus {
+    BOOL userInteractionEnabled = playerStatus != JPVideoPlayerStatusUnknown && playerStatus != JPVideoPlayerStatusFailed && playerStatus != JPVideoPlayerStatusStop;
+    self.dragSlider.userInteractionEnabled = userInteractionEnabled;
 }
 
-- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges {
-    _rangesValue = cacheRanges;
+- (void)viewWillPrepareToReuse {
+    [self cacheRangeDidChange:@[] videoURL:[NSURL new]];
+    [self playProgressDidChangeElapsedSeconds:0
+                                 totalSeconds:1
+                                     videoURL:[NSURL new]];
+}
+
+- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges
+                   videoURL:(NSURL *)videoURL {
+    _rangeValues = cacheRanges;
     [self updateCacheProgressViewIfNeed];
 }
 
 - (void)playProgressDidChangeElapsedSeconds:(NSTimeInterval)elapsedSeconds
-                               totalSeconds:(NSTimeInterval)totalSeconds {
-    if(self.userDragging){
-        return;
-    }
+                               totalSeconds:(NSTimeInterval)totalSeconds
+                                   videoURL:(NSURL *)videoURL {
+    if(self.userDragging) return;
+    if(totalSeconds < 1e-3) totalSeconds = 1.0;
 
-    if(totalSeconds == 0){
-        totalSeconds = 1;
+    float delta = (float)(elapsedSeconds / totalSeconds);
+    if (delta < 0 || delta > 1) {
+        JPErrorLog(@"delta must between [0, 1]");
     }
-
-    float delta = elapsedSeconds / totalSeconds;
-    NSParameterAssert(delta >= 0);
-    NSParameterAssert(delta <= 1);
     delta = MIN(1, delta);
     delta = MAX(0, delta);
     [self.dragSlider setValue:delta animated:YES];
@@ -103,8 +110,19 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
     self.elapsedSeconds = elapsedSeconds;
 }
 
-- (void)didFetchVideoFileLength:(NSUInteger)videoLength {
+- (void)didFetchVideoFileLength:(NSUInteger)videoLength
+                       videoURL:(NSURL *)videoURL {
     self.fileLength = videoLength;
+}
+
+- (void)videoPlayerStatusDidChange:(JPVideoPlayerStatus)playerStatus
+                          videoURL:(NSURL *)videoURL {
+    BOOL userInteractionEnabled = playerStatus != JPVideoPlayerStatusUnknown && playerStatus != JPVideoPlayerStatusFailed && playerStatus != JPVideoPlayerStatusStop;
+    self.dragSlider.userInteractionEnabled = userInteractionEnabled;
+}
+
+- (void)videoPlayerInterfaceOrientationDidChange:(JPVideoPlayViewInterfaceOrientation)interfaceOrientation
+                                        videoURL:(NSURL *)videoURL {
 }
 
 - (void)setUserDragging:(BOOL)userDragging {
@@ -131,6 +149,9 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 #pragma mark - Private
 
 - (void)_setup {
+    NSBundle *bundle = [NSBundle bundleForClass:[JPVideoPlayer class]];
+    NSString *bundlePath = [bundle pathForResource:@"JPVideoPlayer" ofType:@"bundle"];
+
     self.trackProgressView = ({
         UIProgressView *view = [UIProgressView new];
         view.trackTintColor = [UIColor colorWithWhite:1 alpha:0.15];
@@ -151,12 +172,13 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 
     self.dragSlider = ({
         UISlider *view = [UISlider new];
-        [view setThumbImage:[UIImage imageNamed:@"JPVideoPlayer.bundle/jp_videoplayer_progress_handler_normal"] forState:UIControlStateNormal];
-        [view setThumbImage:[UIImage imageNamed:@"JPVideoPlayer.bundle/jp_videoplayer_progress_handler_hightlight"] forState:UIControlStateHighlighted];
+        [view setThumbImage:[UIImage imageNamed:[bundlePath stringByAppendingPathComponent:@"jp_videoplayer_progress_handler_normal"]] forState:UIControlStateNormal];
+        [view setThumbImage:[UIImage imageNamed:[bundlePath stringByAppendingPathComponent:@"jp_videoplayer_progress_handler_hightlight"]] forState:UIControlStateHighlighted];
         view.maximumTrackTintColor = [UIColor clearColor];
         [view addTarget:self action:@selector(dragSliderDidDrag:) forControlEvents:UIControlEventValueChanged];
         [view addTarget:self action:@selector(dragSliderDidStart:) forControlEvents:UIControlEventTouchDown];
         [view addTarget:self action:@selector(dragSliderDidEnd:) forControlEvents:UIControlEventTouchUpInside];
+        view.userInteractionEnabled = NO;
         [self addSubview:view];
 
         view;
@@ -179,10 +201,7 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 }
 
 - (void)userDidFinishDrag {
-    NSParameterAssert(!self.userDragging);
-    if(!self.totalSeconds){
-        return;
-    }
+    if(!self.totalSeconds)return;
     [self updateCacheProgressViewIfNeed];
     [self.playerView jp_seekToTime:CMTimeMakeWithSeconds([self fetchElapsedTimeInterval], 1000)];
 }
@@ -198,31 +217,33 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 }
 
 - (void)displayCacheProgressViewIfNeed {
-    if(self.userDragging || !self.rangesValue.count){
+    if(self.userDragging || !self.rangeValues.count){
         return;
     }
 
     [self removeCacheProgressViewIfNeed];
     NSRange targetRange = JPInvalidRange;
     NSUInteger dragStartLocation = [self fetchDragStartLocation];
-    if(self.rangesValue.count == 1){
-        if(JPValidFileRange([self.rangesValue.firstObject rangeValue])){
-            targetRange = [self.rangesValue.firstObject rangeValue];
+    if(self.rangeValues.count == 1){
+        if(JPValidFileRange([self.rangeValues.firstObject rangeValue])){
+            targetRange = [self.rangeValues.firstObject rangeValue];
         }
     }
     else {
         // find the range that the closest to dragStartLocation.
-        for(NSValue *value in self.rangesValue){
-            NSRange range = [value rangeValue];
-            NSUInteger distance = NSUIntegerMax;
+        NSRange range;
+        NSUInteger distance = NSUIntegerMax;
+        int deltaDistance;
+        for(NSValue *value in self.rangeValues){
+            range = [value rangeValue];
             if(JPValidFileRange(range)){
                 if(NSLocationInRange(dragStartLocation, range)){
                     targetRange = range;
                     break;
                 }
                 else {
-                    int deltaDistance = abs((int)(range.location - dragStartLocation));
-                    deltaDistance = abs((int)(NSMaxRange(range) - dragStartLocation)) < deltaDistance ?: deltaDistance;
+                    deltaDistance = abs((int)(range.location - dragStartLocation));
+                    deltaDistance = abs((int)(NSMaxRange(range) - dragStartLocation)) < deltaDistance ? (NSMaxRange(range) - dragStartLocation) : deltaDistance;
                     if(deltaDistance < distance){
                         distance = deltaDistance;
                         targetRange = range;
@@ -232,9 +253,9 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
         }
     }
 
-    if(!JPValidFileRange(targetRange)){
-        return;
-    }
+    if(!JPValidFileRange(targetRange)) return;
+    if(!self.fileLength) return;
+
     CGFloat cacheProgressViewOriginX = targetRange.location * self.trackProgressView.bounds.size.width / self.fileLength;
     CGFloat cacheProgressViewWidth = targetRange.length * self.trackProgressView.bounds.size.width / self.fileLength;
     self.cachedProgressView.frame = CGRectMake(cacheProgressViewOriginX, 0, cacheProgressViewWidth, self.trackProgressView.bounds.size.height);
@@ -242,7 +263,7 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 }
 
 - (NSUInteger)fetchDragStartLocation {
-    return self.fileLength * self.dragSlider.value;
+    return (NSUInteger)(self.fileLength * self.dragSlider.value);
 }
 
 - (NSTimeInterval)fetchElapsedTimeInterval {
@@ -347,22 +368,43 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
     [self.progressView viewWillPrepareToReuse];
 }
 
-- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges {
-    [self.progressView cacheRangeDidChange:cacheRanges];
+- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges
+                   videoURL:(NSURL *)videoURL {
+    [self.progressView cacheRangeDidChange:cacheRanges
+                                  videoURL:videoURL];
 }
 
 - (void)playProgressDidChangeElapsedSeconds:(NSTimeInterval)elapsedSeconds
-                               totalSeconds:(NSTimeInterval)totalSeconds {
+                               totalSeconds:(NSTimeInterval)totalSeconds
+                                   videoURL:(NSURL *)videoURL {
     self.totalSeconds = totalSeconds;
     if(!self.progressView.userDragging){
         [self updateTimeLabelWithElapsedSeconds:elapsedSeconds totalSeconds:totalSeconds];
     }
     [self.progressView playProgressDidChangeElapsedSeconds:elapsedSeconds
-                                              totalSeconds:totalSeconds];
+                                              totalSeconds:totalSeconds
+                                                  videoURL:videoURL];
 }
 
-- (void)didFetchVideoFileLength:(NSUInteger)videoLength {
-    [self.progressView didFetchVideoFileLength:videoLength];
+- (void)didFetchVideoFileLength:(NSUInteger)videoLength
+                       videoURL:(NSURL *)videoURL {
+    [self.progressView didFetchVideoFileLength:videoLength
+                                      videoURL:videoURL];
+}
+
+- (void)videoPlayerStatusDidChange:(JPVideoPlayerStatus)playerStatus
+                          videoURL:(NSURL *)videoURL {
+    BOOL isPlaying = playerStatus == JPVideoPlayerStatusBuffering || playerStatus == JPVideoPlayerStatusPlaying || playerStatus == JPVideoPlayerStatusReadyToPlay;
+    self.playButton.selected = !isPlaying;
+    [self.progressView videoPlayerStatusDidChange:playerStatus
+                                         videoURL:videoURL];
+}
+
+- (void)videoPlayerInterfaceOrientationDidChange:(JPVideoPlayViewInterfaceOrientation)interfaceOrientation
+                                        videoURL:(NSURL *)videoURL {
+    self.landscapeButton.selected = interfaceOrientation == JPVideoPlayViewInterfaceOrientationLandscape;
+    [self.progressView videoPlayerInterfaceOrientationDidChange:interfaceOrientation
+                                                       videoURL:videoURL];
 }
 
 
@@ -398,12 +440,15 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 }
 
 - (void)_setup {
+    NSBundle *bundle = [NSBundle bundleForClass:[JPVideoPlayer class]];
+    NSString *bundlePath = [bundle pathForResource:@"JPVideoPlayer" ofType:@"bundle"];
+
     self.backgroundColor = [UIColor clearColor];
 
     self.playButton = ({
         UIButton *button = [UIButton new];
-        [button setImage:[UIImage imageNamed:@"JPVideoPlayer.bundle/jp_videoplayer_pause"] forState:UIControlStateNormal];
-        [button setImage:[UIImage imageNamed:@"JPVideoPlayer.bundle/jp_videoplayer_play"] forState:UIControlStateSelected];
+        [button setImage:[UIImage imageNamed:[bundlePath stringByAppendingPathComponent:@"jp_videoplayer_pause"]] forState:UIControlStateNormal];
+        [button setImage:[UIImage imageNamed:[bundlePath stringByAppendingPathComponent:@"jp_videoplayer_play"]] forState:UIControlStateSelected];
         [button addTarget:self action:@selector(playButtonDidClick:) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:button];
 
@@ -430,8 +475,8 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 
     self.landscapeButton = ({
         UIButton *button = [UIButton new];
-        [button setImage:[UIImage imageNamed:@"JPVideoPlayer.bundle/jp_videoplayer_landscape"] forState:UIControlStateNormal];
-        [button setImage:[UIImage imageNamed:@"JPVideoPlayer.bundle/jp_videoplayer_portrait"] forState:UIControlStateSelected];
+        [button setImage:[UIImage imageNamed:[bundlePath stringByAppendingPathComponent:@"jp_videoplayer_landscape"]] forState:UIControlStateNormal];
+        [button setImage:[UIImage imageNamed:[bundlePath stringByAppendingPathComponent:@"jp_videoplayer_portrait"]] forState:UIControlStateSelected];
         [button addTarget:self action:@selector(landscapeButtonDidClick:) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:button];
 
@@ -531,29 +576,50 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
     [self.controlBar viewWillPrepareToReuse];
 }
 
-- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges {
-    [self.controlBar cacheRangeDidChange:cacheRanges];
+- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges
+                   videoURL:(NSURL *)videoURL {
+    [self.controlBar cacheRangeDidChange:cacheRanges
+                                videoURL:videoURL];
 }
 
 - (void)playProgressDidChangeElapsedSeconds:(NSTimeInterval)elapsedSeconds
-                               totalSeconds:(NSTimeInterval)totalSeconds {
+                               totalSeconds:(NSTimeInterval)totalSeconds
+                                   videoURL:(NSURL *)videoURL {
     [self.controlBar playProgressDidChangeElapsedSeconds:elapsedSeconds
-                                            totalSeconds:totalSeconds];
+                                            totalSeconds:totalSeconds
+                                                videoURL:videoURL];
 }
 
-- (void)didFetchVideoFileLength:(NSUInteger)videoLength {
-    [self.controlBar didFetchVideoFileLength:videoLength];
+- (void)didFetchVideoFileLength:(NSUInteger)videoLength
+                       videoURL:(NSURL *)videoURL {
+    [self.controlBar didFetchVideoFileLength:videoLength
+                                    videoURL:videoURL];
+}
+
+- (void)videoPlayerStatusDidChange:(JPVideoPlayerStatus)playerStatus
+                          videoURL:(NSURL *)videoURL {
+    [self.controlBar videoPlayerStatusDidChange:playerStatus
+                                       videoURL:videoURL];
+}
+
+- (void)videoPlayerInterfaceOrientationDidChange:(JPVideoPlayViewInterfaceOrientation)interfaceOrientation
+                                        videoURL:(NSURL *)videoURL {
+    [self.controlBar videoPlayerInterfaceOrientationDidChange:interfaceOrientation
+                                                     videoURL:videoURL];
 }
 
 
 #pragma mark - Private
 
 - (void)_setup {
+    NSBundle *bundle = [NSBundle bundleForClass:[JPVideoPlayer class]];
+    NSString *bundlePath = [bundle pathForResource:@"JPVideoPlayer" ofType:@"bundle"];
+
     self.blurImageView = ({
         UIImageView *view = [UIImageView new];
         UIImage *blurImage = self.blurImage;
         if(!blurImage){
-            blurImage = [UIImage imageNamed:@"JPVideoPlayer.bundle/jp_videoplayer_blur"];
+            blurImage = [UIImage imageNamed:[bundlePath stringByAppendingPathComponent:@"jp_videoplayer_blur"]];
         }
         view.image = blurImage;
         [self addSubview:view];
@@ -581,7 +647,7 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 
 @property (nonatomic, strong) UIProgressView *elapsedProgressView;
 
-@property (nonatomic, strong) NSArray<NSValue *> *rangesValue;
+@property (nonatomic, strong) NSArray<NSValue *> *rangeValues;
 
 @property(nonatomic, assign) NSUInteger fileLength;
 
@@ -651,24 +717,29 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 }
 
 - (void)viewWillPrepareToReuse {
-    [self cacheRangeDidChange:@[]];
-    [self playProgressDidChangeElapsedSeconds:0 totalSeconds:1];
+    [self cacheRangeDidChange:@[] videoURL:[NSURL new]];
+    [self playProgressDidChangeElapsedSeconds:0
+                                 totalSeconds:1
+                                     videoURL:[NSURL new]];
 }
 
-- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges {
-    _rangesValue = cacheRanges;
+- (void)cacheRangeDidChange:(NSArray<NSValue *> *)cacheRanges
+                   videoURL:(NSURL *)videoURL {
+    _rangeValues = cacheRanges;
     [self displayCacheProgressViewIfNeed];
 }
 
 - (void)playProgressDidChangeElapsedSeconds:(NSTimeInterval)elapsedSeconds
-                               totalSeconds:(NSTimeInterval)totalSeconds {
-    if(totalSeconds == 0){
-        totalSeconds = 1;
+                               totalSeconds:(NSTimeInterval)totalSeconds
+                                   videoURL:(NSURL *)videoURL {
+    if((NSInteger)totalSeconds < 1e-3){
+        totalSeconds = 1.0;
     }
 
-    float delta = elapsedSeconds / totalSeconds;
-    NSParameterAssert(delta >= 0);
-    NSParameterAssert(delta <= 1);
+    float delta = (float)(elapsedSeconds / totalSeconds);
+    if (delta < 0 || delta > 1) {
+        JPErrorLog(@"delta must between [0, 1]");
+    }
     delta = MIN(1, delta);
     delta = MAX(0, delta);
     [self.elapsedProgressView setProgress:delta animated:YES];
@@ -676,36 +747,39 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
     self.elapsedSeconds = elapsedSeconds;
 }
 
-- (void)didFetchVideoFileLength:(NSUInteger)videoLength {
+- (void)didFetchVideoFileLength:(NSUInteger)videoLength
+                       videoURL:(NSURL *)videoURL {
     self.fileLength = videoLength;
 }
 
 - (void)displayCacheProgressViewIfNeed {
-    if(!self.rangesValue.count){
+    if(!self.rangeValues.count){
         return;
     }
 
     [self removeCacheProgressViewIfNeed];
     NSRange targetRange = JPInvalidRange;
     NSUInteger dragStartLocation = [self fetchDragStartLocation];
-    if(self.rangesValue.count == 1){
-        if(JPValidFileRange([self.rangesValue.firstObject rangeValue])){
-            targetRange = [self.rangesValue.firstObject rangeValue];
+    if(self.rangeValues.count == 1){
+        if(JPValidFileRange([self.rangeValues.firstObject rangeValue])){
+            targetRange = [self.rangeValues.firstObject rangeValue];
         }
     }
     else {
         // find the range that the closest to dragStartLocation.
-        for(NSValue *value in self.rangesValue){
-            NSRange range = [value rangeValue];
-            NSUInteger distance = NSUIntegerMax;
+        NSRange range;
+        NSUInteger distance = NSUIntegerMax;
+        int deltaDistance;
+        for(NSValue *value in self.rangeValues){
+            range = [value rangeValue];
             if(JPValidFileRange(range)){
                 if(NSLocationInRange(dragStartLocation, range)){
                     targetRange = range;
                     break;
                 }
                 else {
-                    int deltaDistance = abs((int)(range.location - dragStartLocation));
-                    deltaDistance = abs((int)(NSMaxRange(range) - dragStartLocation)) < deltaDistance ?: deltaDistance;
+                    deltaDistance = abs((int)(range.location - dragStartLocation));
+                    deltaDistance = abs((int)(NSMaxRange(range) - dragStartLocation)) < deltaDistance ? (NSMaxRange(range) - dragStartLocation) : deltaDistance;
                     if(deltaDistance < distance){
                         distance = deltaDistance;
                         targetRange = range;
@@ -715,9 +789,9 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
         }
     }
 
-    if(!JPValidFileRange(targetRange)){
-        return;
-    }
+    if(!JPValidFileRange(targetRange)) return;
+    if(!self.fileLength) return;
+
     CGFloat cacheProgressViewOriginX = targetRange.location * self.trackProgressView.bounds.size.width / self.fileLength;
     CGFloat cacheProgressViewWidth = targetRange.length * self.trackProgressView.bounds.size.width / self.fileLength;
     self.cachedProgressView.frame = CGRectMake(cacheProgressViewOriginX, 0, cacheProgressViewWidth, self.trackProgressView.bounds.size.height);
@@ -766,8 +840,8 @@ CGFloat const JPVideoPlayerBufferingIndicatorWidthHeight = 46;
 nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewController
   interfaceOrientation:(JPVideoPlayViewInterfaceOrientation)interfaceOrientation {
     CGSize referenceSize = constrainedRect.size;
-    self.blurBackgroundView.frame = CGRectMake((referenceSize.width - JPVideoPlayerBufferingIndicatorWidthHeight) * 0.5,
-            (referenceSize.height - JPVideoPlayerBufferingIndicatorWidthHeight) * 0.5,
+    self.blurBackgroundView.frame = CGRectMake((referenceSize.width - JPVideoPlayerBufferingIndicatorWidthHeight) * 0.5f,
+            (referenceSize.height - JPVideoPlayerBufferingIndicatorWidthHeight) * 0.5f,
             JPVideoPlayerBufferingIndicatorWidthHeight,
             JPVideoPlayerBufferingIndicatorWidthHeight);
     self.activityIndicator.frame = self.blurBackgroundView.bounds;
@@ -776,7 +850,7 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 
 
 - (void)startAnimating{
-    if (!self.isAnimating) {
+    if (!self.isAnimating || self.hidden) {
         self.hidden = NO;
         [self.activityIndicator startAnimating];
         self.animating = YES;
@@ -784,7 +858,7 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 }
 
 - (void)stopAnimating{
-    if (self.isAnimating) {
+    if (self.isAnimating || !self.hidden) {
         self.hidden = YES;
         [self.activityIndicator stopAnimating];
         self.animating = NO;
@@ -794,11 +868,11 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 
 #pragma mark - JPVideoPlayerBufferingProtocol
 
-- (void)didStartBuffering {
+- (void)didStartBufferingVideoURL:(NSURL *)videoURL {
     [self startAnimating];
 }
 
-- (void)didFinishBuffering {
+- (void)didFinishBufferingVideoURL:(NSURL *)videoURL {
     [self stopAnimating];
 }
 
@@ -839,7 +913,39 @@ nearestViewControllerInViewTree:(UIViewController *_Nullable)nearestViewControll
 
 @end
 
+@interface _JPVideoPlayerPlaceholderView : UIView
+@end
+@implementation _JPVideoPlayerPlaceholderView
+@end
+
+@interface _JPVideoPlayerVideoContainerView : UIView
+@end
+@implementation _JPVideoPlayerVideoContainerView
+@end
+
+@interface _JPVideoPlayerControlContainerView : UIView
+@end
+@implementation _JPVideoPlayerControlContainerView
+@end
+
+@interface _JPVideoPlayerProgressContainerView : UIView
+@end
+@implementation _JPVideoPlayerProgressContainerView
+@end
+
+@interface _JPVideoPlayerBufferingIndicatorContainerView : UIView
+@end
+@implementation _JPVideoPlayerBufferingIndicatorContainerView
+@end
+
+@interface _JPVideoPlayerUserInteractionContainerView : UIView
+@end
+@implementation _JPVideoPlayerUserInteractionContainerView
+@end
+
 @interface JPVideoPlayerView()
+
+@property (nonatomic, strong) UIView *placeholderView;
 
 @property (nonatomic, strong) UIView *videoContainerView;
 
@@ -864,9 +970,10 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
-- (instancetype)init {
+- (instancetype)initWithNeedAutoHideControlViewWhenUserTapping:(BOOL)needAutoHideControlViewWhenUserTapping {
     self = [super init];
     if(self){
+        _needAutoHideControlViewWhenUserTapping = needAutoHideControlViewWhenUserTapping;
         [self _setup];
     }
     return self;
@@ -874,6 +981,7 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
 
 - (void)setFrame:(CGRect)frame {
     [super setFrame:frame];
+    self.placeholderView.frame = self.bounds;
     self.videoContainerView.frame = self.bounds;
     self.controlContainerView.frame = self.bounds;
     self.progressContainerView.frame = self.bounds;
@@ -889,6 +997,7 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
             self.videoContainerView.center.y - bounds.size.height * 0.5,
             bounds.size.width,
             bounds.size.height);
+    self.placeholderView.frame = self.videoContainerView.frame;
     self.controlContainerView.frame = self.videoContainerView.frame;
     self.progressContainerView.frame = self.videoContainerView.frame;
     self.bufferingIndicatorContainerView.frame = self.videoContainerView.frame;
@@ -906,6 +1015,7 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
             center.x - self.videoContainerView.bounds.size.height * 0.5,
             self.videoContainerView.bounds.size.width,
             self.videoContainerView.bounds.size.height);
+    self.placeholderView.frame = self.videoContainerView.frame;
     self.controlContainerView.frame = self.videoContainerView.frame;
     self.progressContainerView.frame = self.videoContainerView.frame;
     self.bufferingIndicatorContainerView.frame = self.videoContainerView.frame;
@@ -926,14 +1036,14 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
                           delay:0
                         options:UIViewAnimationOptionCurveEaseOut
                      animations:^{
-                         if(self.controlContainerView.alpha == 0){
-                             self.controlContainerView.alpha = 1;
-                             self.progressContainerView.alpha = 0;
+                         if(self.controlContainerView.alpha < 1e-3){
+                             self.controlContainerView.alpha = 1.f;
+                             self.progressContainerView.alpha = 0.f;
                              [self startTimer];
                          }
                          else {
-                             self.controlContainerView.alpha = 0;
-                             self.progressContainerView.alpha = 1;
+                             self.controlContainerView.alpha = 0.f;
+                             self.progressContainerView.alpha = 1.f;
                              [self endTimer];
                          }
 
@@ -1041,8 +1151,16 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
 #pragma mark - Setup
 
 - (void)_setup {
+    self.placeholderView = ({
+        UIView *view = [_JPVideoPlayerPlaceholderView new];
+        view.backgroundColor = [UIColor clearColor];
+        [self addSubview:view];
+
+        view;
+    });
+
     self.videoContainerView = ({
-        UIView *view = [UIView new];
+        UIView *view = [_JPVideoPlayerVideoContainerView new];
         view.backgroundColor = [UIColor clearColor];
         [self addSubview:view];
         view.userInteractionEnabled = NO;
@@ -1051,7 +1169,7 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
     });
 
     self.bufferingIndicatorContainerView = ({
-        UIView *view = [UIView new];
+        UIView *view = [_JPVideoPlayerBufferingIndicatorContainerView new];
         view.backgroundColor = [UIColor clearColor];
         [self addSubview:view];
         view.userInteractionEnabled = NO;
@@ -1060,7 +1178,7 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
     });
 
     self.progressContainerView = ({
-        UIView *view = [UIView new];
+        UIView *view = [_JPVideoPlayerProgressContainerView new];
         view.backgroundColor = [UIColor clearColor];
         [self addSubview:view];
 
@@ -1068,7 +1186,7 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
     });
 
     self.controlContainerView = ({
-        UIView *view = [UIView new];
+        UIView *view = [_JPVideoPlayerControlContainerView new];
         view.backgroundColor = [UIColor clearColor];
         [self addSubview:view];
 
@@ -1076,17 +1194,18 @@ static const NSTimeInterval kJPControlViewAutoHiddenTimeInterval = 5;
     });
 
     self.userInteractionContainerView = ({
-        UIView *view = [UIView new];
+        UIView *view = [_JPVideoPlayerUserInteractionContainerView new];
         view.backgroundColor = [UIColor clearColor];
         [self addSubview:view];
 
         view;
     });
 
-    UITapGestureRecognizer *tapGestureRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapGestureDidTap)];
-    [self.userInteractionContainerView addGestureRecognizer:tapGestureRecognizer];
-    [self startTimer];
-
+    if (self.needAutoHideControlViewWhenUserTapping) {
+        UITapGestureRecognizer *tapGestureRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapGestureDidTap)];
+        [self.userInteractionContainerView addGestureRecognizer:tapGestureRecognizer];
+        [self startTimer];
+    }
     [NSNotificationCenter.defaultCenter addObserver:self
                                            selector:@selector(didReceiveUserStartDragNotification)
                                                name:JPVideoPlayerControlProgressViewUserDidStartDragNotification

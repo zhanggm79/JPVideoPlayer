@@ -20,7 +20,7 @@ UIKIT_EXTERN NSString *JPVideoPlayerControlProgressViewUserDidStartDragNotificat
 UIKIT_EXTERN NSString *JPVideoPlayerControlProgressViewUserDidEndDragNotification;
 @interface JPVideoPlayerControlProgressView : UIView<JPVideoPlayerControlProgressProtocol>
 
-@property (nonatomic, strong, readonly) NSArray<NSValue *> *rangesValue;
+@property (nonatomic, strong, readonly) NSArray<NSValue *> *rangeValues;
 
 @property (nonatomic, assign, readonly) NSUInteger fileLength;
 
@@ -74,7 +74,7 @@ UIKIT_EXTERN NSString *JPVideoPlayerControlProgressViewUserDidEndDragNotificatio
 UIKIT_EXTERN const CGFloat JPVideoPlayerProgressViewElementHeight;
 @interface JPVideoPlayerProgressView : UIView<JPVideoPlayerProtocol>
 
-@property (nonatomic, strong, readonly) NSArray<NSValue *> *rangesValue;
+@property (nonatomic, strong, readonly) NSArray<NSValue *> *rangeValues;
 
 @property (nonatomic, assign, readonly) NSUInteger fileLength;
 
@@ -102,15 +102,42 @@ UIKIT_EXTERN const CGFloat JPVideoPlayerProgressViewElementHeight;
 
 @interface JPVideoPlayerView : UIView
 
+/**
+ * A placeholderView to custom your own business.
+ */
+@property (nonatomic, strong, readonly) UIView *placeholderView;
+
+/**
+ * A layer to display video layer.
+ */
 @property (nonatomic, strong, readonly) CALayer *videoContainerLayer;
 
+/**
+ * A placeholder view to display controlView
+ */
 @property (nonatomic, strong, readonly) UIView *controlContainerView;
 
+/**
+ * A placeholder view to display progress view.
+ */
 @property (nonatomic, strong, readonly) UIView *progressContainerView;
 
+/**
+ * A placeholder view to display buffering indicator view.
+ */
 @property (nonatomic, strong, readonly) UIView *bufferingIndicatorContainerView;
 
+/**
+ * A view to receive user interaction.
+ */
 @property (nonatomic, strong, readonly) UIView *userInteractionContainerView;
+
+/**
+ * To control need automatic hide controlView when user touched.
+ */
+@property (nonatomic, assign, readonly) BOOL needAutoHideControlViewWhenUserTapping;
+
+- (instancetype)initWithNeedAutoHideControlViewWhenUserTapping:(BOOL)needAutoHideControlViewWhenUserTapping;
 
 @end
 

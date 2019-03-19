@@ -16,55 +16,29 @@
 
 @interface JPVideoPlayerModel()
 
-/**
- * The playing URL.
- */
 @property(nonatomic, strong, nullable)NSURL *url;
 
 /**
- * The view of the video picture will show on.
+ * The layer of the video picture will show on.
  */
 @property(nonatomic, weak, nullable)CALayer *unownedShowLayer;
 
-/**
- * options,
- */
 @property(nonatomic, assign)JPVideoPlayerOptions playerOptions;
 
-/**
- * The Player to play video.
- */
 @property(nonatomic, strong, nullable)AVPlayer *player;
 
-/**
- * The current player's layer.
- */
 @property(nonatomic, strong, nullable)AVPlayerLayer *playerLayer;
 
-/**
- * The current player's item.
- */
 @property(nonatomic, strong, nullable)AVPlayerItem *playerItem;
 
-/**
- * The current player's urlAsset.
- */
 @property(nonatomic, strong, nullable)AVURLAsset *videoURLAsset;
 
-/**
- * A flag to book is cancel play or not.
- */
 @property(nonatomic, assign, getter=isCancelled)BOOL cancelled;
 
 /**
  * The resourceLoader for the videoPlayer.
  */
 @property(nonatomic, strong, nullable)JPVideoPlayerResourceLoader *resourceLoader;
-
-/**
- * The last play time for player.
- */
-@property(nonatomic, assign)NSTimeInterval lastTime;
 
 /**
  * The play progress observer.
@@ -76,9 +50,13 @@
  */
 @property(nonatomic, weak) JPVideoPlayer *videoPlayer;
 
+@property(nonatomic, assign) NSTimeInterval elapsedSeconds;
+
+@property(nonatomic, assign) NSTimeInterval totalSeconds;
+
 @end
 
-static NSString *JPVideoPlayerURLScheme = @"systemCannotRecognitionScheme";
+static NSString *JPVideoPlayerURLScheme = @"com.jpvideoplayer.system.cannot.recognition.scheme.www";
 static NSString *JPVideoPlayerURL = @"www.newpan.com";
 @implementation JPVideoPlayerModel
 
@@ -108,8 +86,9 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
     return self.player.volume;
 }
 
-- (void)seekToTime:(CMTime)time {
+- (BOOL)seekToTime:(CMTime)time {
     NSAssert(NO, @"You cannot call this method.");
+    return NO;
 }
 
 - (void)pause {
@@ -137,7 +116,11 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
 
     // remove observer.
     [self.playerItem removeObserver:self.videoPlayer forKeyPath:@"status"];
+    [self.playerItem removeObserver:self.videoPlayer forKeyPath:@"playbackLikelyToKeepUp"];
+    [self.playerItem removeObserver:self.videoPlayer forKeyPath:@"playbackBufferEmpty"];
+    [self.playerItem removeObserver:self.videoPlayer forKeyPath:@"playbackBufferFull"];
     [self.player removeTimeObserver:self.timeObserver];
+    [self.player removeObserver:self.videoPlayer forKeyPath:@"rate"];
 
     // remove player
     [self.player pause];
@@ -148,6 +131,8 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
     self.playerLayer = nil;
     self.videoURLAsset = nil;
     self.resourceLoader = nil;
+    self.elapsedSeconds = 0;
+    self.totalSeconds = 0;
 }
 
 @end
@@ -160,39 +145,24 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
  */
 @property(nonatomic, strong, nullable)JPVideoPlayerModel *playerModel;
 
-/**
- * The playing status of video player before app enter background.
- */
-@property(nonatomic, assign)JPVideoPlayerStatus playerStatus_beforeEnterBackground;
-
-/*
- * lock.
- */
-@property(nonatomic) pthread_mutex_t lock;
-
-@property (nonatomic, strong) NSTimer *checkBufferingTimer;
-
 @property(nonatomic, assign) JPVideoPlayerStatus playerStatus;
+
+@property(nonatomic, assign) BOOL seekingToTime;
 
 @end
 
 @implementation JPVideoPlayer
 
 - (void)dealloc {
-    pthread_mutex_destroy(&_lock);
     [self stopPlay];
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self removePlayerItemDidPlayToEndObserver];
 }
 
 - (instancetype)init{
     self = [super init];
     if (self) {
-        pthread_mutexattr_t mutexattr;
-        pthread_mutexattr_init(&mutexattr);
-        pthread_mutexattr_settype(&mutexattr, PTHREAD_MUTEX_RECURSIVE);
-        pthread_mutex_init(&_lock, &mutexattr);
         _playerStatus = JPVideoPlayerStatusUnknown;
-        [self addObserver];
+        _seekingToTime = NO;
     }
     return self;
 }
@@ -204,7 +174,7 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
                              fullVideoCachePath:(NSString *)fullVideoCachePath
                                         options:(JPVideoPlayerOptions)options
                                     showOnLayer:(CALayer *)showLayer
-                        configurationCompletion:(JPPlayVideoConfigurationCompletion)configurationCompletion {
+                                  configuration:(JPVideoPlayerConfiguration)configuration {
     if (!url.absoluteString.length) {
         [self callDelegateMethodWithError:JPErrorWithDescription(@"The url is disable")];
         return nil;
@@ -227,6 +197,8 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
     NSURL *videoPathURL = [NSURL fileURLWithPath:fullVideoCachePath];
     AVURLAsset *videoURLAsset = [AVURLAsset URLAssetWithURL:videoPathURL options:nil];
     AVPlayerItem *playerItem = [AVPlayerItem playerItemWithAsset:videoURLAsset];
+    [self removePlayerItemDidPlayToEndObserver];
+    [self addPlayerItemDidPlayToEndObserver:playerItem];
     JPVideoPlayerModel *model = [self playerModelWithURL:url
                                               playerItem:playerItem
                                                  options:options
@@ -235,16 +207,14 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
         model.player.muted = YES;
     }
     self.playerModel = model;
-    if(configurationCompletion){
-        configurationCompletion([UIView new], model);
-    }
+    if(configuration) configuration(model);
     return model;
 }
 
 - (nullable JPVideoPlayerModel *)playVideoWithURL:(NSURL *)url
                                           options:(JPVideoPlayerOptions)options
                                         showLayer:(CALayer *)showLayer
-                          configurationCompletion:(JPPlayVideoConfigurationCompletion)configurationCompletion {
+                                    configuration:(JPVideoPlayerConfiguration)configuration {
     if (!url.absoluteString.length) {
         [self callDelegateMethodWithError:JPErrorWithDescription(@"The url is disable")];
         return nil;
@@ -264,9 +234,13 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
     // Make the `resourceLoader` become the delegate of 'videoURLAsset', and provide data to the player.
     JPVideoPlayerResourceLoader *resourceLoader = [JPVideoPlayerResourceLoader resourceLoaderWithCustomURL:url];
     resourceLoader.delegate = self;
-    AVURLAsset *videoURLAsset = [AVURLAsset URLAssetWithURL:[self handleVideoURL] options:nil];
+    
+    // url instead of `[self composeFakeVideoURL]`, otherwise some urls can not play normally
+    AVURLAsset *videoURLAsset = [AVURLAsset URLAssetWithURL:[self composeFakeVideoURL] options:nil];
     [videoURLAsset.resourceLoader setDelegate:resourceLoader queue:dispatch_get_main_queue()];
     AVPlayerItem *playerItem = [AVPlayerItem playerItemWithAsset:videoURLAsset];
+    [self removePlayerItemDidPlayToEndObserver];
+    [self addPlayerItemDidPlayToEndObserver:playerItem];
     JPVideoPlayerModel *model = [self playerModelWithURL:url
                                               playerItem:playerItem
                                                  options:options
@@ -276,15 +250,15 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
     if (options & JPVideoPlayerMutedPlay) {
         model.player.muted = YES;
     }
-    if(configurationCompletion){
-        configurationCompletion([UIView new], model);
-    }
+    if(configuration) configuration(model);
+    [self invokePlayerStatusDidChangeDelegateMethod];
     return model;
 }
 
 - (void)resumePlayWithShowLayer:(CALayer *)showLayer
                         options:(JPVideoPlayerOptions)options
-        configurationCompletion:(JPPlayVideoConfigurationCompletion)configurationCompletion {
+                  configuration:(JPVideoPlayerConfiguration)configuration {
+    JPAssertMainThread;
     if (!showLayer) {
         [self callDelegateMethodWithError:JPErrorWithDescription(@"The layer to display video layer is nil")];
         return;
@@ -301,13 +275,28 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
     [self setVideoGravityWithOptions:options playerModel:self.playerModel];
     [self displayVideoPicturesOnShowLayer];
 
-    if(configurationCompletion){
-        configurationCompletion([UIView new], self.playerModel);
-    }
-    if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-        [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
-    }
+    if(configuration) configuration(self.playerModel);
+    [self invokePlayerStatusDidChangeDelegateMethod];
 }
+
+- (void)seekToTimeWhenRecordPlayback:(CMTime)time {
+    if(!self.playerModel){
+        return;
+    }
+    if(!CMTIME_IS_VALID(time)){
+        return;
+    }
+    __weak typeof(self) wself = self;
+    [self.playerModel.player seekToTime:time completionHandler:^(BOOL finished) {
+
+        __strong typeof(wself) sself = wself;
+        if(finished){
+            [sself internalResumeWithNeedCallDelegate:YES];
+        }
+
+    }];
+}
+
 
 #pragma mark - JPVideoPlayerPlaybackProtocol
 
@@ -320,7 +309,7 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
 
 - (float)rate {
     if(!self.playerModel){
-        return 0;
+        return 0.f;
     }
     return self.playerModel.rate;
 }
@@ -348,30 +337,41 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
 
 - (float)volume {
     if(!self.playerModel){
-        return 0;
+        return 0.f;
     }
     return self.playerModel.volume;
 }
 
-- (void)seekToTime:(CMTime)time {
-    if(!self.playerModel){
-        return;
+- (BOOL)seekToTime:(CMTime)time {
+    if(!self.playerModel || !CMTIME_IS_VALID(time)) return NO;
+
+    if (self.playerStatus == JPVideoPlayerStatusUnknown || self.playerStatus == JPVideoPlayerStatusFailed || self.playerStatus == JPVideoPlayerStatusStop) {
+        return NO;
     }
-    if(!CMTIME_IS_VALID(time)){
-        return;
-    }
+
     BOOL needResume = self.playerModel.player.rate != 0;
-    self.playerModel.lastTime = 0;
     [self internalPauseWithNeedCallDelegate:NO];
+    self.seekingToTime = YES;
     __weak typeof(self) wself = self;
     [self.playerModel.player seekToTime:time completionHandler:^(BOOL finished) {
 
         __strong typeof(wself) sself = wself;
+        sself.seekingToTime = NO;
         if(finished && needResume){
             [sself internalResumeWithNeedCallDelegate:NO];
         }
 
     }];
+
+    return YES;
+}
+
+- (NSTimeInterval)elapsedSeconds {
+    return [self.playerModel elapsedSeconds];
+}
+
+- (NSTimeInterval)totalSeconds {
+    return [self.playerModel totalSeconds];
 }
 
 - (void)pause {
@@ -383,6 +383,11 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
 
 - (void)resume {
     if(!self.playerModel){
+        return;
+    }
+    if(self.playerStatus == JPVideoPlayerStatusStop){
+        self.playerStatus = JPVideoPlayerStatusUnknown;
+        [self seekToHeaderThenStartPlayback];
         return;
     }
     [self internalResumeWithNeedCallDelegate:YES];
@@ -400,13 +405,9 @@ static NSString *JPVideoPlayerURL = @"www.newpan.com";
         return;
     }
     [self.playerModel stopPlay];
-    [self stopCheckBufferingTimerIfNeed];
-    [self resetAwakeWaitingTimeInterval];
     self.playerModel = nil;
     self.playerStatus = JPVideoPlayerStatusStop;
-    if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-        [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
-    }
+    [self invokePlayerStatusDidChangeDelegateMethod];
 }
 
 
@@ -422,19 +423,17 @@ didReceiveLoadingRequestTask:(JPResourceLoadingRequestWebTask *)requestTask {
 
 #pragma mark - App Observer
 
-- (void)addObserver {
+- (void)addPlayerItemDidPlayToEndObserver:(AVPlayerItem *)playerItem {
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(playerItemDidPlayToEnd:)
                                                  name:AVPlayerItemDidPlayToEndTimeNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(appReceivedMemoryWarning)
-                                                 name:UIApplicationDidReceiveMemoryWarningNotification
-                                               object:nil];
+                                               object:playerItem];
 }
 
-- (void)appReceivedMemoryWarning {
-    [self.playerModel stopPlay];
+- (void)removePlayerItemDidPlayToEndObserver {
+    [NSNotificationCenter.defaultCenter removeObserver:self
+                                                  name:AVPlayerItemDidPlayToEndTimeNotification
+                                                object:nil];
 }
 
 
@@ -442,9 +441,10 @@ didReceiveLoadingRequestTask:(JPResourceLoadingRequestWebTask *)requestTask {
 
 - (void)playerItemDidPlayToEnd:(NSNotification *)notification {
     AVPlayerItem *playerItem = notification.object;
-    if(playerItem != self.playerModel.playerItem){
-        return;
-    }
+    if(playerItem != self.playerModel.playerItem) return;
+
+    self.playerStatus = JPVideoPlayerStatusStop;
+    [self invokePlayerStatusDidChangeDelegateMethod];
 
     // ask need automatic replay or not.
     if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:shouldAutoReplayVideoForURL:)]) {
@@ -452,185 +452,125 @@ didReceiveLoadingRequestTask:(JPResourceLoadingRequestWebTask *)requestTask {
             return;
         }
     }
-
-    // Seek the start point of file data and repeat play, this handle have no memory surge.
-    __weak typeof(self.playerModel) weak_Item = self.playerModel;
-    [self.playerModel.player seekToTime:CMTimeMake(0, 1) completionHandler:^(BOOL finished) {
-        __strong typeof(weak_Item) strong_Item = weak_Item;
-        if (!strong_Item) return;
-
-        self.playerModel.lastTime = 0;
-        [strong_Item.player play];
-
-        if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-            [self.delegate videoPlayer:self playerStatusDidChange:JPVideoPlayerStatusPlaying];
-        }
-    }];
+    [self seekToHeaderThenStartPlayback];
 }
 
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSString *,id> *)change context:(void *)context{
-    if ([keyPath isEqualToString:@"status"]) {
-        AVPlayerItem *playerItem = (AVPlayerItem *)object;
-        AVPlayerItemStatus status = playerItem.status;
-        switch (status) {
-            case AVPlayerItemStatusUnknown:{
-                self.playerStatus = AVPlayerItemStatusUnknown;
-                if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-                    [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
-                }
-            }
-                break;
-
-            case AVPlayerItemStatusReadyToPlay:{
-                JPDebugLog(@"AVPlayerItemStatusReadyToPlay");
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSString *,id> *)change
+                       context:(void *)context{
+    if (object == self.playerModel.player) {
+        if([keyPath isEqualToString:@"rate"]) {
+            float rate = [change[NSKeyValueChangeNewKey] floatValue];
+            if((rate != 0) && (self.playerStatus == JPVideoPlayerStatusReadyToPlay)){
                 self.playerStatus = JPVideoPlayerStatusPlaying;
-                // When get ready to play note, we can go to play, and can add the video picture on show view.
-                if (!self.playerModel) return;
-                [self.playerModel.player play];
-                [self displayVideoPicturesOnShowLayer];
-                if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-                    [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
+                [self invokePlayerStatusDidChangeDelegateMethod];
+            }
+        }
+    }
+    else if (object == self.playerModel.playerItem) {
+        if ([keyPath isEqualToString:@"status"]) {
+            AVPlayerItem *playerItem = (AVPlayerItem *)object;
+            AVPlayerItemStatus status = playerItem.status;
+            switch (status) {
+                case AVPlayerItemStatusUnknown:{
+                    JPDebugLog(@"AVPlayerItemStatusUnknown");
+                    self.playerStatus = JPVideoPlayerStatusUnknown;
+                    [self invokePlayerStatusDidChangeDelegateMethod];
                 }
-            }
-                break;
+                    break;
 
-            case AVPlayerItemStatusFailed:{
-                [self stopCheckBufferingTimerIfNeed];
-                self.playerStatus = JPVideoPlayerStatusFailed;
-                [self callDelegateMethodWithError:JPErrorWithDescription(@"AVPlayerItemStatusFailed")];
-                if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-                    [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
+                case AVPlayerItemStatusReadyToPlay:{
+                    JPDebugLog(@"AVPlayerItemStatusReadyToPlay");
+                    self.playerStatus = JPVideoPlayerStatusReadyToPlay;
+                    // When get ready to play note, we can go to play, and can add the video picture on show view.
+                    if (!self.playerModel) return;
+                    [self invokePlayerStatusDidChangeDelegateMethod];
+                    [self.playerModel.player play];
+                    [self displayVideoPicturesOnShowLayer];
                 }
+                    break;
+
+                case AVPlayerItemStatusFailed:{
+                    self.playerStatus = JPVideoPlayerStatusFailed;
+                    JPDebugLog(@"AVPlayerItemStatusFailed");
+                    [self callDelegateMethodWithError:JPErrorWithDescription(@"AVPlayerItemStatusFailed")];
+                    [self invokePlayerStatusDidChangeDelegateMethod];
+                }
+                    break;
+
+                default:
+                    break;
             }
-                break;
-
-            default:
-                break;
         }
-    }
-}
-
-
-#pragma mark - Timer
-
-- (void)startCheckBufferingTimer {
-    if(self.checkBufferingTimer){
-        [self stopCheckBufferingTimerIfNeed];
-    }
-    self.checkBufferingTimer = ({
-        NSTimer *timer = [NSTimer timerWithTimeInterval:0.5
-                                                 target:self
-                                               selector:@selector(checkBufferingTimeDidChange)
-                                               userInfo:nil
-                                                repeats:YES];
-        [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
-
-        timer;
-    });
-}
-
-- (void)stopCheckBufferingTimerIfNeed {
-    if(self.checkBufferingTimer){
-        [self.checkBufferingTimer invalidate];
-        self.checkBufferingTimer = nil;
-    }
-}
-
-- (void)checkBufferingTimeDidChange {
-    NSTimeInterval currentTime = CMTimeGetSeconds(self.playerModel.player.currentTime);
-    if (currentTime != 0 && currentTime > (self.playerModel.lastTime + 0.2)) {
-        self.playerModel.lastTime = currentTime;
-        [self endAwakeFromBuffering];
-        if(self.playerStatus == JPVideoPlayerStatusPlaying){
-            return;
+        else if ([keyPath isEqualToString:@"playbackLikelyToKeepUp"]) {
+            BOOL playbackLikelyToKeepUp = self.playerModel.playerItem.playbackLikelyToKeepUp;
+            JPDebugLog(@"%@", playbackLikelyToKeepUp ? @"buffering finished, start to play." : @"start to buffer.");
+            self.playerStatus = playbackLikelyToKeepUp ? JPVideoPlayerStatusPlaying : JPVideoPlayerStatusBuffering;
+            [self invokePlayerStatusDidChangeDelegateMethod];
         }
-        self.playerStatus = JPVideoPlayerStatusPlaying;
-        if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-            [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
-        }
-    }
-    else{
-        if(self.playerStatus == JPVideoPlayerStatusBuffering){
-            [self startAwakeWhenBuffering];
-            return;
-        }
-        self.playerStatus = JPVideoPlayerStatusBuffering;
-        if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-            [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
-        }
-    }
-}
-
-
-#pragma mark - Awake When Buffering
-
-static NSTimeInterval _awakeWaitingTimeInterval = 3;
-- (void)resetAwakeWaitingTimeInterval {
-    _awakeWaitingTimeInterval = 3;
-    JPDebugLog(@"重置了播放唤醒等待时间");
-}
-
-- (void)updateAwakeWaitingTimerInterval {
-    _awakeWaitingTimeInterval += 2;
-    if(_awakeWaitingTimeInterval > 12){
-        _awakeWaitingTimeInterval = 12;
-    }
-}
-
-static BOOL _isOpenAwakeWhenBuffering = NO;
-- (void)startAwakeWhenBuffering {
-    if(!_isOpenAwakeWhenBuffering){
-        _isOpenAwakeWhenBuffering = YES;
-        JPDebugLog(@"Start awake when buffering.");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_awakeWaitingTimeInterval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-
-            if(!_isOpenAwakeWhenBuffering){
-                [self endAwakeFromBuffering];
-                JPDebugLog(@"Player is playing when call awake buffering block.");
-                return;
+        else if ([keyPath isEqualToString:@"playbackBufferEmpty"]) {
+            BOOL playbackBufferEmpty = self.playerModel.playerItem.playbackBufferEmpty;
+            JPDebugLog(@"playbackBufferEmpty: %@.", playbackBufferEmpty ? @"empty" : @"not empty");
+            if (playbackBufferEmpty) {
+                self.playerStatus = JPVideoPlayerStatusBuffering;
+                [self invokePlayerStatusDidChangeDelegateMethod];
             }
-            JPDebugLog(@"Call resume in awake buffering block.");
-            _isOpenAwakeWhenBuffering = NO;
-            [self.playerModel pause];
-            [self updateAwakeWaitingTimerInterval];
-            [self.playerModel resume];
-
-        });
-    }
-}
-
-- (void)endAwakeFromBuffering {
-    if(_isOpenAwakeWhenBuffering){
-        JPDebugLog(@"End awake buffering.");
-        _isOpenAwakeWhenBuffering = NO;
-        [self resetAwakeWaitingTimeInterval];
+        }
+        else if ([keyPath isEqualToString:@"playbackBufferFull"]) {
+            BOOL playbackBufferFull = self.playerModel.playerItem.playbackBufferFull;
+            JPDebugLog(@"playbackBufferFull: %@.", playbackBufferFull ? @"full" : @"not full");
+            if (playbackBufferFull) {
+                self.playerStatus = JPVideoPlayerStatusPlaying;
+                [self invokePlayerStatusDidChangeDelegateMethod];
+            }
+        }
     }
 }
 
 
 #pragma mark - Private
 
+- (void)seekToHeaderThenStartPlayback {
+    // Seek the start point of file data and repeat play, this handle have no memory surge.
+    __weak typeof(self.playerModel) weak_Item = self.playerModel;
+    __weak typeof(self) wself = self;
+    [self invokePlayerStatusDidChangeDelegateMethod];
+
+    [self.playerModel.player seekToTime:CMTimeMake(0, 1) completionHandler:^(BOOL finished) {
+
+        __strong typeof(weak_Item) strong_Item = weak_Item;
+        __weak typeof(wself) sself = wself;
+        [strong_Item.player play];
+        sself.playerStatus = JPVideoPlayerStatusPlaying;
+        [sself invokePlayerStatusDidChangeDelegateMethod];
+
+    }];
+}
+
+- (void)invokePlayerStatusDidChangeDelegateMethod {
+    JPDispatchAsyncOnMainQueue(^{
+
+        if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
+            [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
+        }
+
+    });
+}
 
 - (void)internalPauseWithNeedCallDelegate:(BOOL)needCallDelegate {
     [self.playerModel pause];
-    [self stopCheckBufferingTimerIfNeed];
     self.playerStatus = JPVideoPlayerStatusPause;
-    [self endAwakeFromBuffering];
     if(needCallDelegate){
-        if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-            [self.delegate videoPlayer:self playerStatusDidChange:JPVideoPlayerStatusPause];
-        }
+        [self invokePlayerStatusDidChangeDelegateMethod];
     }
 }
 
 - (void)internalResumeWithNeedCallDelegate:(BOOL)needCallDelegate {
     [self.playerModel resume];
-    [self startCheckBufferingTimer];
     self.playerStatus = JPVideoPlayerStatusPlaying;
     if(needCallDelegate){
-        if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playerStatusDidChange:)]) {
-            [self.delegate videoPlayer:self playerStatusDidChange:self.playerStatus];
-        }
+        [self invokePlayerStatusDidChangeDelegateMethod];
     }
 }
 
@@ -638,15 +578,18 @@ static BOOL _isOpenAwakeWhenBuffering = NO;
                                 playerItem:(AVPlayerItem *)playerItem
                                    options:(JPVideoPlayerOptions)options
                                showOnLayer:(CALayer *)showLayer {
-    [self resetAwakeWaitingTimeInterval];
     JPVideoPlayerModel *model = [JPVideoPlayerModel new];
     model.unownedShowLayer = showLayer;
     model.url = url;
     model.playerOptions = options;
     model.playerItem = playerItem;
     [playerItem addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionNew context:nil];
+    [playerItem addObserver:self forKeyPath:@"playbackLikelyToKeepUp" options:NSKeyValueObservingOptionNew context:nil];
+    [playerItem addObserver:self forKeyPath:@"playbackBufferEmpty" options:NSKeyValueObservingOptionNew context:nil];
+    [playerItem addObserver:self forKeyPath:@"playbackBufferFull" options:NSKeyValueObservingOptionNew context:nil];
 
     model.player = [AVPlayer playerWithPlayerItem:playerItem];
+    [model.player addObserver:self forKeyPath:@"rate" options:NSKeyValueObservingOptionNew context:nil];
     if ([model.player respondsToSelector:@selector(automaticallyWaitsToMinimizeStalling)]) {
         model.player.automaticallyWaitsToMinimizeStalling = NO;
     }
@@ -654,28 +597,30 @@ static BOOL _isOpenAwakeWhenBuffering = NO;
     [self setVideoGravityWithOptions:options playerModel:model];
     model.videoPlayer = self;
     self.playerStatus = JPVideoPlayerStatusUnknown;
-    [self startCheckBufferingTimer];
 
     // add observer for video playing progress.
     __weak typeof(model) wItem = model;
     __weak typeof(self) wself = self;
-    [model.player addPeriodicTimeObserverForInterval:CMTimeMake(1.0, 10.0) queue:dispatch_get_main_queue() usingBlock:^(CMTime time){
+    [model.player addPeriodicTimeObserverForInterval:CMTimeMake(1, 10) queue:dispatch_get_main_queue() usingBlock:^(CMTime time){
         __strong typeof(wItem) sItem = wItem;
         __strong typeof(wself) sself = wself;
         if (!sItem || !sself) return;
 
         double elapsedSeconds = CMTimeGetSeconds(time);
         double totalSeconds = CMTimeGetSeconds(sItem.playerItem.duration);
-        if(totalSeconds == 0 || isnan(totalSeconds) || elapsedSeconds > totalSeconds){
-            return;
+        sself.playerModel.elapsedSeconds = elapsedSeconds;
+        sself.playerModel.totalSeconds = totalSeconds;
+        if(totalSeconds == 0 || isnan(totalSeconds) || elapsedSeconds > totalSeconds) return;
+
+        if (!sself.seekingToTime) {
+            JPDispatchSyncOnMainQueue(^{
+                if (sself.delegate && [sself.delegate respondsToSelector:@selector(videoPlayerPlayProgressDidChange:elapsedSeconds:totalSeconds:)]) {
+                    [sself.delegate videoPlayerPlayProgressDidChange:sself
+                                                      elapsedSeconds:elapsedSeconds
+                                                        totalSeconds:totalSeconds];
+                }
+            });
         }
-        JPDispatchSyncOnMainQueue(^{
-            if (sself.delegate && [sself.delegate respondsToSelector:@selector(videoPlayerPlayProgressDidChange:elapsedSeconds:totalSeconds:)]) {
-                [sself.delegate videoPlayerPlayProgressDidChange:sself
-                                                  elapsedSeconds:elapsedSeconds
-                                                    totalSeconds:totalSeconds];
-            }
-        });
 
     }];
 
@@ -685,39 +630,38 @@ static BOOL _isOpenAwakeWhenBuffering = NO;
 - (void)setVideoGravityWithOptions:(JPVideoPlayerOptions)options
                        playerModel:(JPVideoPlayerModel *)playerModel {
     NSString *videoGravity = nil;
-    if (options&JPVideoPlayerLayerVideoGravityResizeAspect) {
+    if (options & JPVideoPlayerLayerVideoGravityResizeAspect) {
         videoGravity = AVLayerVideoGravityResizeAspect;
     }
-    else if (options&JPVideoPlayerLayerVideoGravityResize){
+    else if (options & JPVideoPlayerLayerVideoGravityResize){
         videoGravity = AVLayerVideoGravityResize;
     }
-    else if (options&JPVideoPlayerLayerVideoGravityResizeAspectFill){
+    else if (options & JPVideoPlayerLayerVideoGravityResizeAspectFill){
         videoGravity = AVLayerVideoGravityResizeAspectFill;
     }
     playerModel.playerLayer.videoGravity = videoGravity;
 }
 
-- (NSURL *)handleVideoURL {
+- (NSURL *)composeFakeVideoURL {
     NSURLComponents *components = [[NSURLComponents alloc] initWithURL:[NSURL URLWithString:JPVideoPlayerURL] resolvingAgainstBaseURL:NO];
     components.scheme = JPVideoPlayerURLScheme;
     return [components URL];
 }
 
-- (void)displayVideoPicturesOnShowLayer{
-    if (!self.playerModel.isCancelled) {
+- (void)displayVideoPicturesOnShowLayer {
+    if (!self.playerModel.isCancelled && !self.playerModel.playerLayer.superlayer) {
         // fixed #26.
         self.playerModel.playerLayer.frame = self.playerModel.unownedShowLayer.bounds;
-        // use dispatch_after to prevent layer layout animation.
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self.playerModel.unownedShowLayer addSublayer:self.playerModel.playerLayer];
-        });
-
+        // remove all layer layout animations.
+        [self.playerModel.unownedShowLayer removeAllAnimations];
+        [self.playerModel.playerLayer removeAllAnimations];
+        [self.playerModel.unownedShowLayer addSublayer:self.playerModel.playerLayer];
     }
 }
 
 - (void)callDelegateMethodWithError:(NSError *)error {
-    JPDebugLog(@"Player abort because of error: %@", error);
-    JPDispatchSyncOnMainQueue(^{
+    JPErrorLog(@"Player abort because of error: %@", error);
+    JPDispatchAsyncOnMainQueue(^{
         if (self.delegate && [self.delegate respondsToSelector:@selector(videoPlayer:playFailedWithError:)]) {
             [self.delegate videoPlayer:self playFailedWithError:error];
         }

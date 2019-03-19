@@ -130,20 +130,9 @@ static NSString *kJPVideoPlayerVersion2CacheHasBeenClearedKey = @"com.newpan.ver
                 return;
             }
 
-            // we will remove index file when cache video finished, so we can judge video is cached finished or not by index file existed or not.
-            BOOL isCacheFull = ![self.fileManager fileExistsAtPath:[JPVideoPlayerCachePath videoCacheIndexFilePathForKey:key]];
-            if(isCacheFull){
-                if (completion) {
-                    JPDispatchSyncOnMainQueue(^{
-                        completion([JPVideoPlayerCachePath videoCachePathForKey:key], JPVideoPlayerCacheTypeFull);
-                    });
-                }
-                return;
-            }
-
             if (completion) {
                 JPDispatchSyncOnMainQueue(^{
-                    completion([JPVideoPlayerCachePath videoCachePathForKey:key], JPVideoPlayerCacheTypeFragment);
+                    completion([JPVideoPlayerCachePath videoCachePathForKey:key], JPVideoPlayerCacheTypeExisted);
                 });
             }
         }
@@ -302,13 +291,14 @@ static NSString *kJPVideoPlayerVersion2CacheHasBeenClearedKey = @"com.newpan.ver
 }
 
 - (NSString *)cachedFileNameForKey:(NSString *)key {
-    NSParameterAssert(key);
-    if(!key){
+    if(!key.length){
+        JPErrorLog(@"the key is nil");
         return nil;
     }
-    if ([key length]) {
-        NSString *strippedQueryKey = [[NSURL URLWithString:key] absoluteStringByStrippingQuery];
-        key = [strippedQueryKey length] ? strippedQueryKey : key;
+
+    NSURL *url = [NSURL URLWithString:key];
+    if(url){
+        key = [url jp_cURLCommand];
     }
     const char *str = key.UTF8String;
     if (str == NULL) str = "";
